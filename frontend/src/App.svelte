@@ -120,6 +120,11 @@
     history = [entry, ...history];
   }
 
+  function clearHistory() {
+    history = []; // 清空历史记录
+    localStorage.removeItem("translate_history"); // 清空本地存储的历史记录
+  }
+
   function handleCopy() {
     if (!output) return;
     navigator.clipboard.writeText(output);
@@ -348,10 +353,8 @@
       <div class="drawer-header">
         <h3>历史记录</h3>
         <div class="drawer-actions">
-          <button
-            class="icon-btn"
-            on:click={() => (history = [])}
-            title="清空历史"><Trash2 size={16} /></button
+          <button class="icon-btn" on:click={clearHistory} title="清空历史"
+            ><Trash2 size={16} /></button
           >
           <button class="icon-btn" on:click={() => (showHistory = false)}
             ><X size={18} /></button
