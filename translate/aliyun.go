@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"simpleTranslateWails/config"
+	"simpleTranslate/config"
 
 	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
 	openapiutil "github.com/alibabacloud-go/openapi-util/service"

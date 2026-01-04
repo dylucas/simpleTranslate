@@ -167,7 +167,7 @@
       {#if !sidebarCollapsed}
         <div class="brand" transition:fade={{ duration: 150 }}>
           <div class="brand-icon"><Languages size={22} /></div>
-          <span>GoTranslate</span>
+          <span>Translate</span>
         </div>
       {/if}
 

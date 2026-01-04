@@ -1,4 +1,4 @@
-module simpleTranslateWails
+module simpleTranslate
 
 go 1.23
 

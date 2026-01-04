@@ -2,7 +2,7 @@ package main
 
 import (
 	"context"
-	"simpleTranslateWails/translate"
+	"simpleTranslate/translate"
 )
 
 type App struct {

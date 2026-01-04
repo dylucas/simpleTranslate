@@ -1,7 +1,7 @@
 package translate
 
 import (
-	"simpleTranslateWails/config"
+	"simpleTranslate/config"
 
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common/profile"
