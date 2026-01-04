@@ -29,13 +29,13 @@ SimpleTranslate 是一个基于 Wails 框架开发的桌面翻译应用。后端
 
 ### 下载
 
-从 [Releases](https://github.com/yourusername/simpleTranslate/releases) 页面下载对应平台的预编译二进制文件。
+从 [Releases](https://github.com/dylucas/simpleTranslate/releases) 页面下载对应平台的预编译二进制文件。
 
 ### 源码安装
 
 1. 克隆仓库：
    ```bash
-   git clone https://github.com/yourusername/simpleTranslate.git
+   git clone https://github.com/dylucas/simpleTranslate.git
    cd simpleTranslate
    ```
 
