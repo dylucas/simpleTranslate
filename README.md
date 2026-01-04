@@ -1,61 +1,124 @@
-## 简介
+# SimpleTranslate
 
-SimpleTranslate 是一个基于 Wails 框架开发的桌面翻译应用。后端使用 Go 语言，前端使用 Svelte 框架。支持腾讯云和阿里云的翻译服务，提供简洁的用户界面和高效的翻译体验。
+一个干净清爽的翻译工具
 
 ![alt text](./.github/screenshots/image.png)
 ![alt text](./.github/screenshots/image-1.png)
 
-## 特性
+## 简介
 
-- 支持多种语言翻译（中文、英文、日语、韩语、法语、德语、俄语、西班牙语等）
-- 自动语言检测
-- 支持腾讯云和阿里云翻译服务
-- 桌面应用，无需浏览器
-- 简洁美观的用户界面
-- 历史记录功能
-- 深色模式支持
-- 自定义配置
+SimpleTranslate 是一个基于 Wails 框架开发的桌面翻译应用。后端使用 Go 语言，前端使用 Svelte 框架，提供简洁高效的翻译体验。支持腾讯云和阿里云的翻译服务，能够自动检测语言并进行实时翻译。
+
+## 功能特性
+
+- **多云服务支持**：集成腾讯云翻译和阿里云翻译服务
+- **自动语言检测**：支持自动识别源语言
+- **实时翻译**：输入文本后即时显示翻译结果
+- **多语言支持**：支持中文、英文、日语、韩语、法语、德语、俄语、西班牙语等
+- **历史记录**：保存翻译历史，便于回顾
+- **配置管理**：用户友好的设置界面，支持暗色模式
+- **跨平台**：支持 Windows、macOS 和 Linux
 
 ## 安装
 
 ### 前置要求
 
 - Go 1.23 或更高版本
-- Node.js 和 npm
-- Wails CLI
+- Node.js 16 或更高版本
+- npm 或 yarn
 
-### 克隆项目
+### 下载
 
-```bash
-git clone https://github.com/yourusername/simpleTranslate.git
-cd simpleTranslate
-```
+从 [Releases](https://github.com/yourusername/simpleTranslate/releases) 页面下载对应平台的预编译二进制文件。
 
-### 安装依赖
+### 源码安装
 
-```bash
-# 安装 Go 依赖
-go mod tidy
+1. 克隆仓库：
+   ```bash
+   git clone https://github.com/yourusername/simpleTranslate.git
+   cd simpleTranslate
+   ```
 
-# 安装前端依赖
-cd frontend
-npm install
-cd ..
-```
+2. 安装 Go 依赖：
+   ```bash
+   go mod download
+   ```
+
+3. 安装前端依赖：
+   ```bash
+   cd frontend
+   npm install
+   cd ..
+   ```
+
+4. 构建应用：
+   ```bash
+   wails build
+   ```
 
 ## 使用
 
-### 开发模式
+1. 运行应用：
+   ```bash
+   ./simpleTranslate  # Linux/macOS
+   simpleTranslate.exe  # Windows
+   ```
 
-运行开发模式，支持热重载：
+2. 配置 API 密钥：
+   - 打开设置界面
+   - 输入腾讯云或阿里云的 SecretId 和 SecretKey
+   - 设置默认翻译引擎
+
+3. 开始翻译：
+   - 在输入框中输入要翻译的文本
+   - 选择源语言和目标语言（或使用自动检测）
+   - 点击翻译按钮或按 Enter 键
+
+## 开发
+
+### 开发环境设置
+
+1. 安装 Wails：
+   ```bash
+   go install github.com/wailsapp/wails/v2/cmd/wails@latest
+   ```
+
+2. 启动开发模式：
+   ```bash
+   wails dev
+   ```
+
+这将启动热重载开发服务器，前端和后端代码的更改会自动反映在应用中。
+
+### 项目结构
+
+```
+simpleTranslate/
+├── app.go              # 主应用逻辑
+├── main.go             # 应用入口
+├── config.go           # 配置相关方法
+├── translate/          # 翻译服务包
+│   ├── aliyun.go       # 阿里云翻译实现
+│   └── tencent.go      # 腾讯云翻译实现
+├── config/             # 配置工具包
+├── frontend/           # 前端代码
+│   ├── src/
+│   │   ├── App.svelte  # 主 UI 组件
+│   │   └── lib/
+│   └── package.json
+├── build/              # 构建相关文件
+└── wails.json          # Wails 配置
+```
+
+## 构建
+
+### 开发构建
 
 ```bash
 wails dev
 ```
 
 ### 生产构建
-
-构建不同平台的二进制文件：
 
 ```bash
 # Windows AMD64
@@ -71,41 +134,32 @@ wails build -clean -o simpleTranslate-mac-amd64 -platform darwin/amd64
 wails build -clean -o simpleTranslate-mac-arm64 -platform darwin/arm64
 ```
 
-### 配置
+构建后的二进制文件位于 `build/bin/` 目录下。
 
-首次运行时，需要配置云服务 API 密钥：
+## 配置
 
-1. 打开应用设置
-2. 选择翻译服务（腾讯云或阿里云）
-3. 输入相应的 SecretId 和 SecretKey
-4. 可选：设置区域（Region）
+应用配置存储在用户主目录下的 `.simple_translate/config.json` 文件中，包括：
 
-配置存储在 `~/.simple_translate/config.json`
-
-## 项目结构
-
-```
-simpleTranslate/
-├── app.go              # 主应用逻辑
-├── config.go           # 配置相关方法
-├── main.go             # 应用入口
-├── translate/          # 翻译服务包
-│   ├── aliyun.go       # 阿里云翻译
-│   └── tencent.go      # 腾讯云翻译
-├── config/             # 配置工具包
-├── frontend/           # 前端代码
-│   ├── src/
-│   │   ├── App.svelte  # 主界面
-│   │   └── lib/
-│   └── package.json
-├── build.md            # 构建说明
-└── wails.json          # Wails 配置
-```
+- 云服务 API 密钥
+- 默认翻译引擎
+- UI 设置（暗色模式、侧边栏状态等）
 
 ## 贡献
 
 欢迎提交 Issue 和 Pull Request！
 
+1. Fork 本仓库
+2. 创建特性分支：`git checkout -b feature/new-feature`
+3. 提交更改：`git commit -am 'Add new feature'`
+4. 推送分支：`git push origin feature/new-feature`
+5. 提交 Pull Request
+
 ## 许可证
 
-MIT License
+本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情。
+
+## 致谢
+
+- [Wails](https://wails.io/) - 桌面应用框架
+- [腾讯云翻译](https://cloud.tencent.com/product/tmt) - 翻译服务
+- [阿里云翻译](https://www.aliyun.com/product/ai/alimt) - 翻译服务
