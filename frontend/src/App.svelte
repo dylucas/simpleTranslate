@@ -39,6 +39,7 @@
   let target = "zh";
   let status = "准备就绪";
   let copied = false;
+  let copiedEngines = {}; // { [engine]: boolean } 跟踪每个引擎的复制状态
 
   // --- 界面控制 ---
   let showConfig = false;
@@ -162,6 +163,17 @@
     navigator.clipboard.writeText(textToCopy);
     copied = true;
     setTimeout(() => (copied = false), 2000);
+  }
+
+  function handleCopyEngine(engine) {
+    const textToCopy = compareOutputs?.[engine]?.text;
+    if (!textToCopy) return;
+    navigator.clipboard.writeText(textToCopy);
+    copiedEngines[engine] = true;
+    setTimeout(() => {
+      copiedEngines[engine] = false;
+      copiedEngines = { ...copiedEngines }; // 触发响应式更新
+    }, 2000);
   }
 
   /**
@@ -368,16 +380,31 @@
         </div>
       </section>
 
-      <section class="editor-pane result">
+      <section class="editor-pane result" class:compare-mode={compareMode}>
         {#if compareMode}
           <div class="compare-grid">
             {#each (compareEngines || []) as eng}
               <div class="compare-card" class:best={pickBest && bestEngine === eng}>
                 <div class="compare-header">
                   <span class="compare-title">{eng === "tencent" ? "腾讯" : "阿里"}{#if pickBest && bestEngine === eng}<span class="best-badge">BEST</span>{/if}</span>
-                  {#if compareOutputs?.[eng]?.error}
-                    <span class="compare-error">失败</span>
-                  {/if}
+                  <div class="compare-header-right">
+                    {#if compareOutputs?.[eng]?.error}
+                      <span class="compare-error">失败</span>
+                    {:else if compareOutputs?.[eng]?.text}
+                      <button
+                        class="compare-copy-btn"
+                        on:click={() => handleCopyEngine(eng)}
+                        class:success={copiedEngines[eng]}
+                        title="复制此结果"
+                      >
+                        {#if copiedEngines[eng]}
+                          <Check size={12} />
+                        {:else}
+                          <Copy size={12} />
+                        {/if}
+                      </button>
+                    {/if}
+                  </div>
                 </div>
                 <textarea
                   readonly
@@ -397,7 +424,7 @@
           ></textarea>
         {/if}
         <div class="pane-footer">
-          {#if compareMode ? (pickBest ? bestOutput : output) : output}
+          {#if !compareMode && output}
             <button
               class="action-btn copy"
               on:click={handleCopy}
@@ -498,6 +525,11 @@
     font-size: 12px;
     color: var(--text-sec);
   }
+  .compare-header-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
   .compare-title {
     font-weight: 700;
     color: var(--text-main);
@@ -516,6 +548,31 @@
   .compare-error {
     color: #ef4444;
     font-weight: 700;
+  }
+  .compare-copy-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-sec);
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    min-width: 28px;
+    height: 24px;
+  }
+  .compare-copy-btn:hover {
+    border-color: var(--text-sec);
+    background: var(--bg-hover);
+    color: var(--text-main);
+  }
+  .compare-copy-btn.success {
+    border-color: #10b981;
+    color: #10b981;
+    background: rgba(16, 185, 129, 0.1);
   }
 
   .compare-card textarea {
@@ -917,6 +974,16 @@
     justify-content: flex-end;
     gap: 10px;
     margin-top: 10px;
+  }
+  /* 对照模式下隐藏 footer，让结果区域占满空间 */
+  .editor-pane.result.compare-mode .pane-footer {
+    height: 0;
+    margin-top: 0;
+    overflow: hidden;
+  }
+  /* 对照模式下让 compare-grid 占满整个空间 */
+  .editor-pane.result.compare-mode {
+    padding-bottom: 14px; /* 保持底部 padding，但移除 footer 空间 */
   }
   .char-count {
     font-size: 12px;
