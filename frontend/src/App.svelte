@@ -390,20 +390,20 @@
                   <div class="compare-header-right">
                     {#if compareOutputs?.[eng]?.error}
                       <span class="compare-error">失败</span>
-                    {:else if compareOutputs?.[eng]?.text}
-                      <button
-                        class="compare-copy-btn"
-                        on:click={() => handleCopyEngine(eng)}
-                        class:success={copiedEngines[eng]}
-                        title="复制此结果"
-                      >
-                        {#if copiedEngines[eng]}
-                          <Check size={12} />
-                        {:else}
-                          <Copy size={12} />
-                        {/if}
-                      </button>
                     {/if}
+                    <button
+                      class="compare-copy-btn"
+                      class:success={copiedEngines[eng]}
+                      class:disabled={!compareOutputs?.[eng]?.text || compareOutputs?.[eng]?.error}
+                      on:click={() => handleCopyEngine(eng)}
+                      title="复制此结果"
+                    >
+                      {#if copiedEngines[eng]}
+                        <Check size={12} />
+                      {:else}
+                        <Copy size={12} />
+                      {/if}
+                    </button>
                   </div>
                 </div>
                 <textarea
@@ -529,6 +529,8 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    min-width: 40px; /* 预留复制按钮空间，避免出现/消失时抖动 */
+    justify-content: flex-end;
   }
   .compare-title {
     font-weight: 700;
@@ -563,6 +565,10 @@
     transition: all 0.2s;
     min-width: 28px;
     height: 24px;
+  }
+  .compare-copy-btn.disabled {
+    visibility: hidden; /* 保留占位，不触发布局抖动 */
+    pointer-events: none;
   }
   .compare-copy-btn:hover {
     border-color: var(--text-sec);
