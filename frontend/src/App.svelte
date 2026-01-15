@@ -1,5 +1,7 @@
 <script>
-  import { TranslateText, GetConfig } from "../wailsjs/go/main/App";
+// @ts-nocheck
+
+  import { TranslateText, TranslateMulti, GetConfig } from "../wailsjs/go/main/App";
   import {
     Languages,
     ArrowLeftRight,
@@ -15,7 +17,9 @@
   } from "lucide-svelte";
   import Config from "./lib/Config.svelte";
   import History from "./lib/History.svelte";
+  // @ts-ignore
   import { onMount } from "svelte";
+  // @ts-ignore
   import { fade } from "svelte/transition";
   import { configStore, initConfig, updateAndSaveConfig } from "./lib/store";
 
@@ -25,6 +29,12 @@
   // --- 核心状态 ---
   let input = "";
   let output = "";
+  let compareOutputs = {}; // { [engine]: { text, error } }
+  let bestOutput = "";
+  let bestEngine = "";
+  let compareMode = false;
+  let compareEngines = ["tencent", "aliyun"];
+  let pickBest = true;
   let source = "auto";
   let target = "zh";
   let status = "准备就绪";
@@ -67,6 +77,11 @@
   $: isDark = currentConfig?.isDark ?? true;
   $: sidebarCollapsed = currentConfig?.sidebarCollapsed ?? false;
   $: activeEngine = currentConfig?.defaultEngine || "tencent";
+  $: compareMode = !!(currentConfig?.compareMode ?? false);
+  $: compareEngines = Array.isArray(currentConfig?.compareEngines) && currentConfig.compareEngines.length
+    ? currentConfig.compareEngines
+    : ["tencent", "aliyun"];
+  $: pickBest = !!(currentConfig?.pickBest ?? true);
 
   // 切换主题的函数
   function toggleTheme() {
@@ -89,11 +104,27 @@
     isProcessing = true;
     status = "翻译中...";
     try {
-      const res = await TranslateText(input, source, target, activeEngine);
-      output = res.text;
-      if (source === "auto") {
-        let detected = langs[res.autoSrc] || res.autoSrc;
-        autoDetectLang = `自动 (${detected})`;
+      if (compareMode) {
+        const engines = Array.isArray(compareEngines) ? compareEngines : ["tencent", "aliyun"];
+        const res = await TranslateMulti(input, source, target, engines, !!pickBest);
+        compareOutputs = res.results || {};
+        bestOutput = res.bestText || "";
+        bestEngine = res.bestEngine || "";
+        output = pickBest ? bestOutput : (compareOutputs?.[activeEngine]?.text || "");
+        if (source === "auto") {
+          let detected = langs[res.autoSrc] || res.autoSrc;
+          autoDetectLang = `自动 (${detected})`;
+        }
+      } else {
+        const res = await TranslateText(input, source, target, activeEngine);
+        output = res.text;
+        compareOutputs = {};
+        bestOutput = "";
+        bestEngine = "";
+        if (source === "auto") {
+          let detected = langs[res.autoSrc] || res.autoSrc;
+          autoDetectLang = `自动 (${detected})`;
+        }
       }
       status = "完成";
       // 添加到历史记录
@@ -126,8 +157,9 @@
   }
 
   function handleCopy() {
-    if (!output) return;
-    navigator.clipboard.writeText(output);
+    const textToCopy = compareMode ? (pickBest ? bestOutput : output) : output;
+    if (!textToCopy) return;
+    navigator.clipboard.writeText(textToCopy);
     copied = true;
     setTimeout(() => (copied = false), 2000);
   }
@@ -287,16 +319,36 @@
         </div>
       </div>
 
-      <button
-        class="translate-btn"
-        on:click={translate}
-        disabled={status === "翻译中..."}
-      >
-        <span>{status === "翻译中..." ? "翻译中" : "翻译"}</span>
-        {#if status === "翻译中..."}
-          <span class="loading-dots">...</span>
+      <div class="right-tools">
+        <button
+          class="mode-btn"
+          class:active={compareMode}
+          on:click={() => updateAndSaveConfig("compareMode", !compareMode)}
+          title="多引擎对照"
+        >
+          对照
+        </button>
+        {#if compareMode}
+          <button
+            class="mode-btn"
+            class:active={pickBest}
+            on:click={() => updateAndSaveConfig("pickBest", !pickBest)}
+            title="自动选择最佳结果"
+          >
+            最佳
+          </button>
         {/if}
-      </button>
+        <button
+          class="translate-btn"
+          on:click={translate}
+          disabled={status === "翻译中..."}
+        >
+          <span>{status === "翻译中..." ? "翻译中" : "翻译"}</span>
+          {#if status === "翻译中..."}
+            <span class="loading-dots">...</span>
+          {/if}
+        </button>
+      </div>
     </header>
 
     <div class="editor-container">
@@ -317,14 +369,35 @@
       </section>
 
       <section class="editor-pane result">
-        <textarea
-          readonly
-          value={output}
-          placeholder="翻译结果..."
-          spellcheck="false"
-        ></textarea>
+        {#if compareMode}
+          <div class="compare-grid">
+            {#each (compareEngines || []) as eng}
+              <div class="compare-card" class:best={pickBest && bestEngine === eng}>
+                <div class="compare-header">
+                  <span class="compare-title">{eng === "tencent" ? "腾讯" : "阿里"}{#if pickBest && bestEngine === eng}<span class="best-badge">BEST</span>{/if}</span>
+                  {#if compareOutputs?.[eng]?.error}
+                    <span class="compare-error">失败</span>
+                  {/if}
+                </div>
+                <textarea
+                  readonly
+                  value={compareOutputs?.[eng]?.text || (compareOutputs?.[eng]?.error ? `错误：${compareOutputs[eng].error}` : "")}
+                  placeholder="翻译结果..."
+                  spellcheck="false"
+                ></textarea>
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <textarea
+            readonly
+            value={output}
+            placeholder="翻译结果..."
+            spellcheck="false"
+          ></textarea>
+        {/if}
         <div class="pane-footer">
-          {#if output}
+          {#if compareMode ? (pickBest ? bestOutput : output) : output}
             <button
               class="action-btn copy"
               on:click={handleCopy}
@@ -366,6 +439,93 @@
 </div>
 
 <style>
+  .right-tools {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .mode-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-sec);
+    padding: 8px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .mode-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-main);
+  }
+  .mode-btn.active {
+    border-color: var(--primary);
+    color: var(--primary);
+    background: rgba(59, 130, 246, 0.08);
+  }
+
+  .compare-grid {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    height: 100%;
+    overflow-y: auto;
+  }
+  .compare-card {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0; /* 允许内部 textarea 撑满剩余高度 */
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 8px 10px;
+    background: rgba(0, 0, 0, 0.08);
+    overflow: hidden;
+  }
+  .compare-card.best {
+    border-color: rgba(59, 130, 246, 0.7);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.18);
+    background: radial-gradient(circle at top left, rgba(59, 130, 246, 0.12), transparent 55%);
+  }
+  .compare-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+    font-size: 12px;
+    color: var(--text-sec);
+  }
+  .compare-title {
+    font-weight: 700;
+    color: var(--text-main);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .best-badge {
+    font-size: 10px;
+    padding: 2px 6px;
+    border-radius: 999px;
+    background: rgba(59, 130, 246, 0.12);
+    color: var(--primary);
+    border: 1px solid rgba(59, 130, 246, 0.35);
+  }
+  .compare-error {
+    color: #ef4444;
+    font-weight: 700;
+  }
+
+  .compare-card textarea {
+    flex: 1;
+    min-height: 0;
+    margin-top: 4px;
+    padding: 6px 0 0;
+    border-top: 1px dashed var(--border);
+    font-size: 14px;
+  }
   :root {
     --bg-base: #121212;
     --bg-sidebar: #181818;
@@ -725,9 +885,13 @@
   }
   .editor-pane.source {
     border-right: 1px solid var(--border);
+    flex: 0.9; /* 略缩小原文区域高度 */
   }
   .editor-pane.result {
     background: var(--bg-base); /* 结果区稍微深一点/浅一点区分 */
+    /* 给结果内容更多空间 */
+    padding: 14px 16px;
+    flex: 1.1; /* 略放大翻译结果区域高度 */
   }
 
   textarea {
