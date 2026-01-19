@@ -101,9 +101,10 @@
     isProcessing = true;
     status = "翻译中...";
     try {
+      let res;
       if (compareMode) {
         const engines = Array.isArray(compareEngines) ? compareEngines : ["tencent", "aliyun"];
-        const res = await TranslateMulti(input, source, target, engines);
+        res = await TranslateMulti(input, source, target, engines);
         compareOutputs = res.results || {};
         const preferredEngine = activeEngine || engines[0];
         output = compareOutputs?.[preferredEngine]?.text || "";
@@ -112,7 +113,7 @@
           autoDetectLang = `自动 (${detected})`;
         }
       } else {
-        const res = await TranslateText(input, source, target, activeEngine);
+        res = await TranslateText(input, source, target, activeEngine);
         output = res.text;
         compareOutputs = {};
         if (source === "auto") {
@@ -120,6 +121,7 @@
           autoDetectLang = `自动 (${detected})`;
         }
       }
+      target = res.target || target;
       status = "完成";
       // 添加到历史记录
       addHistory(input, output, source, target);
