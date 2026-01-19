@@ -30,11 +30,8 @@
   let input = "";
   let output = "";
   let compareOutputs = {}; // { [engine]: { text, error } }
-  let bestOutput = "";
-  let bestEngine = "";
   let compareMode = false;
   let compareEngines = ["tencent", "aliyun"];
-  let pickBest = true;
   let source = "auto";
   let target = "zh";
   let status = "准备就绪";
@@ -82,7 +79,6 @@
   $: compareEngines = Array.isArray(currentConfig?.compareEngines) && currentConfig.compareEngines.length
     ? currentConfig.compareEngines
     : ["tencent", "aliyun"];
-  $: pickBest = !!(currentConfig?.pickBest ?? true);
 
   // 切换主题的函数
   function toggleTheme() {
@@ -107,11 +103,10 @@
     try {
       if (compareMode) {
         const engines = Array.isArray(compareEngines) ? compareEngines : ["tencent", "aliyun"];
-        const res = await TranslateMulti(input, source, target, engines, !!pickBest);
+        const res = await TranslateMulti(input, source, target, engines);
         compareOutputs = res.results || {};
-        bestOutput = res.bestText || "";
-        bestEngine = res.bestEngine || "";
-        output = pickBest ? bestOutput : (compareOutputs?.[activeEngine]?.text || "");
+        const preferredEngine = activeEngine || engines[0];
+        output = compareOutputs?.[preferredEngine]?.text || "";
         if (source === "auto") {
           let detected = langs[res.autoSrc] || res.autoSrc;
           autoDetectLang = `自动 (${detected})`;
@@ -120,8 +115,6 @@
         const res = await TranslateText(input, source, target, activeEngine);
         output = res.text;
         compareOutputs = {};
-        bestOutput = "";
-        bestEngine = "";
         if (source === "auto") {
           let detected = langs[res.autoSrc] || res.autoSrc;
           autoDetectLang = `自动 (${detected})`;
@@ -158,7 +151,7 @@
   }
 
   function handleCopy() {
-    const textToCopy = compareMode ? (pickBest ? bestOutput : output) : output;
+    const textToCopy = output;
     if (!textToCopy) return;
     navigator.clipboard.writeText(textToCopy);
     copied = true;
@@ -340,16 +333,6 @@
         >
           对照
         </button>
-        {#if compareMode}
-          <button
-            class="mode-btn"
-            class:active={pickBest}
-            on:click={() => updateAndSaveConfig("pickBest", !pickBest)}
-            title="自动选择最佳结果"
-          >
-            最佳
-          </button>
-        {/if}
         <button
           class="translate-btn"
           on:click={translate}
@@ -384,9 +367,9 @@
         {#if compareMode}
           <div class="compare-grid">
             {#each (compareEngines || []) as eng}
-              <div class="compare-card" class:best={pickBest && bestEngine === eng}>
+              <div class="compare-card">
                 <div class="compare-header">
-                  <span class="compare-title">{eng === "tencent" ? "腾讯" : "阿里"}{#if pickBest && bestEngine === eng}<span class="best-badge">BEST</span>{/if}</span>
+                  <span class="compare-title">{eng === "tencent" ? "腾讯" : "阿里"}</span>
                   <div class="compare-header-right">
                     {#if compareOutputs?.[eng]?.error}
                       <span class="compare-error">失败</span>
@@ -512,11 +495,6 @@
     background: rgba(0, 0, 0, 0.08);
     overflow: hidden;
   }
-  .compare-card.best {
-    border-color: rgba(59, 130, 246, 0.7);
-    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.18);
-    background: radial-gradient(circle at top left, rgba(59, 130, 246, 0.12), transparent 55%);
-  }
   .compare-header {
     display: flex;
     align-items: center;
@@ -538,14 +516,6 @@
     display: flex;
     align-items: center;
     gap: 8px;
-  }
-  .best-badge {
-    font-size: 10px;
-    padding: 2px 6px;
-    border-radius: 999px;
-    background: rgba(59, 130, 246, 0.12);
-    color: var(--primary);
-    border: 1px solid rgba(59, 130, 246, 0.35);
   }
   .compare-error {
     color: #ef4444;

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"simpleTranslate/translate"
-	"sort"
 	"strings"
 	"sync"
 )
@@ -35,12 +34,10 @@ type EngineTranslateResult struct {
 }
 
 type MultiTranslateResult struct {
-	Source     string                           `json:"source"`
-	AutoSrc    string                           `json:"autoSrc"`
-	Target     string                           `json:"target"`
-	BestEngine string                           `json:"bestEngine,omitempty"`
-	BestText   string                           `json:"bestText,omitempty"`
-	Results    map[string]EngineTranslateResult `json:"results"`
+	Source  string                           `json:"source"`
+	AutoSrc string                           `json:"autoSrc"`
+	Target  string                           `json:"target"`
+	Results map[string]EngineTranslateResult `json:"results"`
 }
 
 // 给前端调用的统一入口
@@ -139,39 +136,8 @@ func detectLanguageBestEffort(text string, engines []string) (string, error) {
 	return "", fmt.Errorf("语言识别失败")
 }
 
-func pickBestByMedianLength(engineOrder []string, results map[string]EngineTranslateResult) (bestEngine, bestText string) {
-	type item struct {
-		engine string
-		n      int
-		text   string
-	}
-	items := make([]item, 0, len(engineOrder))
-	for _, e := range engineOrder {
-		r, ok := results[e]
-		if !ok || r.Error != "" || strings.TrimSpace(r.Text) == "" {
-			continue
-		}
-		items = append(items, item{engine: e, n: len([]rune(r.Text)), text: r.Text})
-	}
-	if len(items) == 0 {
-		return "", ""
-	}
-	sort.Slice(items, func(i, j int) bool { return items[i].n < items[j].n })
-	medianN := items[len(items)/2].n
-
-	// Tie-break by original engine order (stable preference).
-	for _, e := range engineOrder {
-		for _, it := range items {
-			if it.engine == e && it.n == medianN {
-				return it.engine, it.text
-			}
-		}
-	}
-	return items[0].engine, items[0].text
-}
-
-// 多引擎并发翻译：同一句话同时走多个引擎，返回并排结果；可选“最佳结果”(简单融合/选择)。
-func (a *App) TranslateMulti(text string, source string, target string, engines []string, pickBest bool) (*MultiTranslateResult, error) {
+// 多引擎并发翻译：同一句话同时走多个引擎，返回并排结果
+func (a *App) TranslateMulti(text string, source string, target string, engines []string) (*MultiTranslateResult, error) {
 	engines = normalizeEngines(engines)
 	src := source
 
@@ -232,9 +198,6 @@ func (a *App) TranslateMulti(text string, source string, target string, engines 
 		AutoSrc: src,
 		Target:  tgt,
 		Results: results,
-	}
-	if pickBest {
-		res.BestEngine, res.BestText = pickBestByMedianLength(engines, results)
 	}
 	return res, nil
 }

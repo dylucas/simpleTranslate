@@ -22,7 +22,6 @@ type CloudConfig struct {
 	// Multi-engine compare (optional; older configs may not have these)
 	CompareMode    bool     `json:"compareMode"`
 	CompareEngines []string `json:"compareEngines"`
-	PickBest       bool     `json:"pickBest"`
 }
 
 // 获取配置文件的存放路径

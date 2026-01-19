@@ -9,7 +9,6 @@ export const configStore = writable({
     // Multi-engine compare
     compareMode: false,
     compareEngines: ['tencent', 'aliyun'],
-    pickBest: true,
     tencent: { secretId: "", secretKey: "", region: "ap-guangzhou" },
     aliyun: { secretId: "", secretKey: "", region: "cn-hangzhou" }
 });
@@ -23,7 +22,6 @@ export const initConfig = async () => {
             if (cfg.isDark === undefined) cfg.isDark = true;
             if (cfg.compareMode === undefined) cfg.compareMode = false;
             if (!Array.isArray(cfg.compareEngines) || cfg.compareEngines.length === 0) cfg.compareEngines = ['tencent', 'aliyun'];
-            if (cfg.pickBest === undefined) cfg.pickBest = true;
             // @ts-ignore
             configStore.set(cfg);
         }
