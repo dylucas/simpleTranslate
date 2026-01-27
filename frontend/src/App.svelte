@@ -126,7 +126,7 @@
       // 添加到历史记录
       addHistory(input, output, source, target);
     } catch (e) {
-      status = "翻译失败";
+      status = e || "翻译失败";
       console.error(e);
     }
     isProcessing = false;

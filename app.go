@@ -44,7 +44,7 @@ type MultiTranslateResult struct {
 func (a *App) TranslateText(text string, source string, target string, engine string) (*TranslateResult, error) {
 	src := source
 
-	// 自动识别
+	// 自动识别语种
 	if src == "" || src == "auto" {
 		detected := ""
 		var err error
