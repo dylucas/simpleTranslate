@@ -118,7 +118,7 @@ func GetDetectLanguage(text string) (string, error) {
 		return "", _err
 	}
 	text = strings.TrimSpace(text)
-	text = strings.ReplaceAll(text, "\n", "")
+	text = strings.ReplaceAll(text, "\n", " ")
 
 	params := CreateApiInfo("GetDetectLanguage")
 	// body params

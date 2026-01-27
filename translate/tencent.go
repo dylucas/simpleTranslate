@@ -28,7 +28,7 @@ func DetectLanguage(text string) (string, error) {
 		return "", err
 	}
 	text = strings.TrimSpace(text)
-	text = strings.ReplaceAll(text, "\n", "")
+	text = strings.ReplaceAll(text, "\n", " ")
 
 	req := tmt.NewLanguageDetectRequest()
 	req.Text = common.StringPtr(text)
