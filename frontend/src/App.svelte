@@ -45,6 +45,7 @@
   let showConfig = false;
   let showHistory = false;
   let history = [];
+  let inputEl; // 用于聚焦输入框的引用
   let autoDetectLang = "自动识别";
 
   const langs = {
@@ -219,10 +220,49 @@
    * @param {{ ctrlKey: any; metaKey: any; key: string; preventDefault: () => void; }} e
    */
   function handleGlobalKeydown(e) {
+    // 发送翻译：Ctrl/Cmd + Enter
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
       e.preventDefault();
       translate();
+      return;
     }
+
+    // 聚焦输入：Ctrl/Cmd + L
+    if ((e.ctrlKey || e.metaKey) && (e.key === "l" || e.key === "L")) {
+      e.preventDefault();
+      if (inputEl) inputEl.focus();
+      return;
+    }
+
+    // 清空输入：Ctrl/Cmd + K
+    if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) {
+      e.preventDefault();
+      input = "";
+      return;
+    }
+
+    // 交换语言：Ctrl/Cmd + J
+    if ((e.ctrlKey || e.metaKey) && (e.key === "j" || e.key === "J")) {
+      e.preventDefault();
+      [source, target] = [target, source];
+      return;
+    }
+
+    // 切换历史面板：Ctrl/Cmd + Shift + H
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "h" || e.key === "H")) {
+      e.preventDefault();
+      showHistory = !showHistory;
+      return;
+    }
+
+    // 切换主题：Ctrl/Cmd + M
+    if ((e.ctrlKey || e.metaKey) && (e.key === "m" || e.key === "M")) {
+      e.preventDefault();
+      updateAndSaveConfig("isDark", !currentConfig.isDark);
+      return;
+    }
+
+    // 关闭历史面板：Esc
     if (e.key === "Escape" && showHistory) {
       showHistory = false;
     }
@@ -395,6 +435,7 @@
     <div class="editor-container">
       <section class="editor-pane source">
         <textarea
+          bind:this={inputEl}
           bind:value={input}
           placeholder="在此输入要翻译的文本..."
           spellcheck="false"
@@ -516,7 +557,8 @@
         {status}
       </div>
       <div class="status-item shortcut-hint">
-        <Keyboard size={12} /> <span>Ctrl + Enter 发送</span>
+        <Keyboard size={12} />
+        <span>Ctrl+Enter 发送 · Ctrl+L 聚焦 · Ctrl+K 清空 · Ctrl+J 交换 · Ctrl+Shift+H 历史</span>
       </div>
     </footer>
   </main>
