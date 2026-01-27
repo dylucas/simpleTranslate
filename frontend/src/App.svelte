@@ -448,35 +448,6 @@
                     </button>
                     <button
                       class="compare-copy-btn"
-                      class:active={speakingText === compareOutputs?.[eng]?.text}
-                      class:disabled={!compareOutputs?.[eng]?.text ||
-                        compareOutputs?.[eng]?.error}
-                      on:click={() =>
-                        handleSpeak(compareOutputs?.[eng]?.text, target)}
-                      title="朗读"
-                    >
-                      {#if speakingText === compareOutputs?.[eng]?.text}
-                        <Square size={12} fill="currentColor" />
-                      {:else}
-                        <Volume2 size={12} />
-                      {/if}
-                    </button>
-                    <button
-                      class="compare-copy-btn"
-                      class:active={speakingText === compareOutputs?.[eng]?.text}
-                      class:disabled={!compareOutputs?.[eng]?.text || compareOutputs?.[eng]?.error}
-                      on:click={() =>
-                        handleSpeak(compareOutputs?.[eng]?.text, target)}
-                      title="朗读"
-                    >
-                      {#if speakingText === compareOutputs?.[eng]?.text}
-                        <Square size={12} fill="currentColor" />
-                      {:else}
-                        <Volume2 size={12} />
-                      {/if}
-                    </button>
-                    <button
-                      class="compare-copy-btn"
                       class:success={copiedEngines[eng]}
                       class:disabled={!compareOutputs?.[eng]?.text || compareOutputs?.[eng]?.error}
                       on:click={() => handleCopyEngine(eng)}
