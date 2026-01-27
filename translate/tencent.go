@@ -2,6 +2,7 @@ package translate
 
 import (
 	"simpleTranslate/config"
+	"strings"
 
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common/profile"
@@ -26,6 +27,8 @@ func DetectLanguage(text string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	text = strings.TrimSpace(text)
+	text = strings.ReplaceAll(text, "\n", "")
 
 	req := tmt.NewLanguageDetectRequest()
 	req.Text = common.StringPtr(text)

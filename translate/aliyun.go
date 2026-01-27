@@ -3,6 +3,7 @@ package translate
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"simpleTranslate/config"
 
@@ -116,6 +117,8 @@ func GetDetectLanguage(text string) (string, error) {
 	if _err != nil {
 		return "", _err
 	}
+	text = strings.TrimSpace(text)
+	text = strings.ReplaceAll(text, "\n", "")
 
 	params := CreateApiInfo("GetDetectLanguage")
 	// body params
