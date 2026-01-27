@@ -14,6 +14,8 @@
     X,
     Settings,
     PanelLeftClose, // 使用更语义化的图标
+    Volume2,
+    Square,
   } from "lucide-svelte";
   import Config from "./lib/Config.svelte";
   import History from "./lib/History.svelte";
@@ -25,6 +27,7 @@
 
   // --- 状态控制增强 ---
   let isProcessing = false; // 并发锁
+  let speakingText = null; // 当前正在朗读的文本
 
   // --- 核心状态 ---
   let input = "";
@@ -54,6 +57,47 @@
     ru: "俄语",
     es: "西语",
   };
+
+  const langMap = {
+    zh: "zh-CN",
+    en: "en-US",
+    jp: "ja-JP",
+    kr: "ko-KR",
+    fr: "fr-FR",
+    de: "de-DE",
+    ru: "ru-RU",
+    es: "es-ES",
+  };
+
+  function getSpeechLang(code) {
+    return langMap[code] || "en-US";
+  }
+
+  function handleSpeak(text, langCode) {
+    if (!text) return;
+
+    if (speakingText === text) {
+      // 如果点击的是当前正在朗读的文本，则停止
+      window.speechSynthesis.cancel();
+      speakingText = null;
+      return;
+    }
+
+    // 停止之前的朗读
+    window.speechSynthesis.cancel();
+
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = getSpeechLang(langCode);
+    u.onend = () => {
+      speakingText = null;
+    };
+    u.onerror = () => {
+      speakingText = null;
+    };
+    
+    speakingText = text;
+    window.speechSynthesis.speak(u);
+  }
 
   // 模拟持久化历史记录
   $: {
@@ -358,6 +402,17 @@
         <div class="pane-footer">
           <span class="char-count">{input.length} 字符</span>
           {#if input}
+            <button
+              class="clear-btn"
+              on:click={() => handleSpeak(input, source === "auto" ? "en" : source)}
+              title="朗读"
+            >
+              {#if speakingText === input}
+                <Square size={12} fill="currentColor" />
+              {:else}
+                <Volume2 size={12} />
+              {/if}
+            </button>
             <button class="clear-btn" on:click={() => (input = "")}
               ><X size={12} /> 清空</button
             >
@@ -376,6 +431,50 @@
                     {#if compareOutputs?.[eng]?.error}
                       <span class="compare-error">失败</span>
                     {/if}
+                    <button
+                      class="compare-copy-btn"
+                      class:active={speakingText === compareOutputs?.[eng]?.text}
+                      class:disabled={!compareOutputs?.[eng]?.text ||
+                        compareOutputs?.[eng]?.error}
+                      on:click={() =>
+                        handleSpeak(compareOutputs?.[eng]?.text, target)}
+                      title="朗读"
+                    >
+                      {#if speakingText === compareOutputs?.[eng]?.text}
+                        <Square size={12} fill="currentColor" />
+                      {:else}
+                        <Volume2 size={12} />
+                      {/if}
+                    </button>
+                    <button
+                      class="compare-copy-btn"
+                      class:active={speakingText === compareOutputs?.[eng]?.text}
+                      class:disabled={!compareOutputs?.[eng]?.text ||
+                        compareOutputs?.[eng]?.error}
+                      on:click={() =>
+                        handleSpeak(compareOutputs?.[eng]?.text, target)}
+                      title="朗读"
+                    >
+                      {#if speakingText === compareOutputs?.[eng]?.text}
+                        <Square size={12} fill="currentColor" />
+                      {:else}
+                        <Volume2 size={12} />
+                      {/if}
+                    </button>
+                    <button
+                      class="compare-copy-btn"
+                      class:active={speakingText === compareOutputs?.[eng]?.text}
+                      class:disabled={!compareOutputs?.[eng]?.text || compareOutputs?.[eng]?.error}
+                      on:click={() =>
+                        handleSpeak(compareOutputs?.[eng]?.text, target)}
+                      title="朗读"
+                    >
+                      {#if speakingText === compareOutputs?.[eng]?.text}
+                        <Square size={12} fill="currentColor" />
+                      {:else}
+                        <Volume2 size={12} />
+                      {/if}
+                    </button>
                     <button
                       class="compare-copy-btn"
                       class:success={copiedEngines[eng]}
@@ -410,6 +509,18 @@
         {/if}
         <div class="pane-footer">
           {#if !compareMode && output}
+            <button
+              class="action-btn"
+              on:click={() => handleSpeak(output, target)}
+              title="朗读"
+            >
+              {#if speakingText === output}
+                <Square size={14} fill="currentColor" />
+              {:else}
+                <Volume2 size={14} />
+              {/if}
+              朗读
+            </button>
             <button
               class="action-btn copy"
               on:click={handleCopy}
@@ -551,6 +662,11 @@
     border-color: #10b981;
     color: #10b981;
     background: rgba(16, 185, 129, 0.1);
+  }
+  .compare-copy-btn.active {
+    border-color: var(--primary);
+    color: var(--primary);
+    background: rgba(59, 130, 246, 0.1);
   }
 
   .compare-card textarea {
