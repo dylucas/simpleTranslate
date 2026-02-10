@@ -74,6 +74,17 @@ SimpleTranslate 是一个基于 Wails 框架开发的桌面翻译应用。后端
    - 选择源语言和目标语言（或使用自动检测）
    - 点击翻译按钮或按 Enter 键
 
+   ### 快捷键
+
+   - **Ctrl/Cmd + Enter**: 发送翻译请求
+   - **Ctrl/Cmd + L**: 聚焦到输入框
+   - **Ctrl/Cmd + K**: 清空输入内容
+   - **Ctrl/Cmd + J**: 交换源语言和目标语言
+   - **Ctrl/Cmd + Shift + H**: 打开 / 关闭历史记录面板
+   - **Ctrl/Cmd + M**: 切换深色 / 浅色主题
+
+   > 在 macOS 上使用 `Cmd` (⌘) 作为修饰键，其余平台使用 `Ctrl`。
+
 ## 开发
 
 ### 开发环境设置

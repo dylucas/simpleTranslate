@@ -21,6 +21,10 @@ type CloudConfig struct {
 	DefaultEngine    string        `json:"defaultEngine"` // "tencent" 或 "aliyun"
 	IsDark           bool          `json:"isDark"`
 	SidebarCollapsed bool          `json:"sidebarCollapsed"`
+	// Multi-engine compare
+	CompareMode    bool     `json:"compareMode"`
+	CompareEngines []string `json:"compareEngines"`
+	PickBest       bool     `json:"pickBest"`
 }
 
 // 获取配置文件的存放路径

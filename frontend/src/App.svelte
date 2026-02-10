@@ -1,5 +1,7 @@
 <script>
-  import { TranslateText, GetConfig } from "../wailsjs/go/main/App";
+// @ts-nocheck
+
+  import { TranslateText, TranslateMulti, GetConfig } from "../wailsjs/go/main/App";
   import {
     Languages,
     ArrowLeftRight,
@@ -12,28 +14,38 @@
     X,
     Settings,
     PanelLeftClose, // 使用更语义化的图标
+    Volume2,
+    Square,
   } from "lucide-svelte";
   import Config from "./lib/Config.svelte";
   import History from "./lib/History.svelte";
+  // @ts-ignore
   import { onMount } from "svelte";
+  // @ts-ignore
   import { fade } from "svelte/transition";
   import { configStore, initConfig, updateAndSaveConfig } from "./lib/store";
 
   // --- 状态控制增强 ---
   let isProcessing = false; // 并发锁
+  let speakingText = null; // 当前正在朗读的文本
 
   // --- 核心状态 ---
   let input = "";
   let output = "";
+  let compareOutputs = {}; // { [engine]: { text, error } }
+  let compareMode = false;
+  let compareEngines = ["tencent", "aliyun"];
   let source = "auto";
   let target = "zh";
   let status = "准备就绪";
   let copied = false;
+  let copiedEngines = {}; // { [engine]: boolean } 跟踪每个引擎的复制状态
 
   // --- 界面控制 ---
   let showConfig = false;
   let showHistory = false;
   let history = [];
+  let inputEl; // 用于聚焦输入框的引用
   let autoDetectLang = "自动识别";
 
   const langs = {
@@ -46,6 +58,47 @@
     ru: "俄语",
     es: "西语",
   };
+
+  const langMap = {
+    zh: "zh-CN",
+    en: "en-US",
+    jp: "ja-JP",
+    kr: "ko-KR",
+    fr: "fr-FR",
+    de: "de-DE",
+    ru: "ru-RU",
+    es: "es-ES",
+  };
+
+  function getSpeechLang(code) {
+    return langMap[code] || "en-US";
+  }
+
+  function handleSpeak(text, langCode) {
+    if (!text) return;
+
+    if (speakingText === text) {
+      // 如果点击的是当前正在朗读的文本，则停止
+      window.speechSynthesis.cancel();
+      speakingText = null;
+      return;
+    }
+
+    // 停止之前的朗读
+    window.speechSynthesis.cancel();
+
+    const u = new SpeechSynthesisUtterance(text);
+    u.lang = getSpeechLang(langCode);
+    u.onend = () => {
+      speakingText = null;
+    };
+    u.onerror = () => {
+      speakingText = null;
+    };
+    
+    speakingText = text;
+    window.speechSynthesis.speak(u);
+  }
 
   // 模拟持久化历史记录
   $: {
@@ -67,6 +120,10 @@
   $: isDark = currentConfig?.isDark ?? true;
   $: sidebarCollapsed = currentConfig?.sidebarCollapsed ?? false;
   $: activeEngine = currentConfig?.defaultEngine || "tencent";
+  $: compareMode = !!(currentConfig?.compareMode ?? false);
+  $: compareEngines = Array.isArray(currentConfig?.compareEngines) && currentConfig.compareEngines.length
+    ? currentConfig.compareEngines
+    : ["tencent", "aliyun"];
 
   // 切换主题的函数
   function toggleTheme() {
@@ -89,17 +146,32 @@
     isProcessing = true;
     status = "翻译中...";
     try {
-      const res = await TranslateText(input, source, target, activeEngine);
-      output = res.text;
-      if (source === "auto") {
-        let detected = langs[res.autoSrc] || res.autoSrc;
-        autoDetectLang = `自动 (${detected})`;
+      let res;
+      if (compareMode) {
+        const engines = Array.isArray(compareEngines) ? compareEngines : ["tencent", "aliyun"];
+        res = await TranslateMulti(input, source, target, engines);
+        compareOutputs = res.results || {};
+        const preferredEngine = activeEngine || engines[0];
+        output = compareOutputs?.[preferredEngine]?.text || "";
+        if (source === "auto") {
+          let detected = langs[res.autoSrc] || res.autoSrc;
+          autoDetectLang = `自动 (${detected})`;
+        }
+      } else {
+        res = await TranslateText(input, source, target, activeEngine);
+        output = res.text;
+        compareOutputs = {};
+        if (source === "auto") {
+          let detected = langs[res.autoSrc] || res.autoSrc;
+          autoDetectLang = `自动 (${detected})`;
+        }
       }
+      target = res.target || target;
       status = "完成";
       // 添加到历史记录
       addHistory(input, output, source, target);
     } catch (e) {
-      status = "翻译失败";
+      status = e || "翻译失败";
       console.error(e);
     }
     isProcessing = false;
@@ -126,20 +198,71 @@
   }
 
   function handleCopy() {
-    if (!output) return;
-    navigator.clipboard.writeText(output);
+    const textToCopy = output;
+    if (!textToCopy) return;
+    navigator.clipboard.writeText(textToCopy);
     copied = true;
     setTimeout(() => (copied = false), 2000);
+  }
+
+  function handleCopyEngine(engine) {
+    const textToCopy = compareOutputs?.[engine]?.text;
+    if (!textToCopy) return;
+    navigator.clipboard.writeText(textToCopy);
+    copiedEngines[engine] = true;
+    setTimeout(() => {
+      copiedEngines[engine] = false;
+      copiedEngines = { ...copiedEngines }; // 触发响应式更新
+    }, 2000);
   }
 
   /**
    * @param {{ ctrlKey: any; metaKey: any; key: string; preventDefault: () => void; }} e
    */
   function handleGlobalKeydown(e) {
+    // 发送翻译：Ctrl/Cmd + Enter
     if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
       e.preventDefault();
       translate();
+      return;
     }
+
+    // 聚焦输入：Ctrl/Cmd + L
+    if ((e.ctrlKey || e.metaKey) && (e.key === "l" || e.key === "L")) {
+      e.preventDefault();
+      if (inputEl) inputEl.focus();
+      return;
+    }
+
+    // 清空输入：Ctrl/Cmd + K
+    if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) {
+      e.preventDefault();
+      input = "";
+      return;
+    }
+
+    // 交换语言：Ctrl/Cmd + J
+    if ((e.ctrlKey || e.metaKey) && (e.key === "j" || e.key === "J")) {
+      e.preventDefault();
+      [source, target] = [target, source];
+      return;
+    }
+
+    // 切换历史面板：Ctrl/Cmd + Shift + H
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "h" || e.key === "H")) {
+      e.preventDefault();
+      showHistory = !showHistory;
+      return;
+    }
+
+    // 切换主题：Ctrl/Cmd + M
+    if ((e.ctrlKey || e.metaKey) && (e.key === "m" || e.key === "M")) {
+      e.preventDefault();
+      updateAndSaveConfig("isDark", !currentConfig.isDark);
+      return;
+    }
+
+    // 关闭历史面板：Esc
     if (e.key === "Escape" && showHistory) {
       showHistory = false;
     }
@@ -287,21 +410,32 @@
         </div>
       </div>
 
-      <button
-        class="translate-btn"
-        on:click={translate}
-        disabled={status === "翻译中..."}
-      >
-        <span>{status === "翻译中..." ? "翻译中" : "翻译"}</span>
-        {#if status === "翻译中..."}
-          <span class="loading-dots">...</span>
-        {/if}
-      </button>
+      <div class="right-tools">
+        <button
+          class="mode-btn"
+          class:active={compareMode}
+          on:click={() => updateAndSaveConfig("compareMode", !compareMode)}
+          title="多引擎对照"
+        >
+          对照
+        </button>
+        <button
+          class="translate-btn"
+          on:click={translate}
+          disabled={status === "翻译中..."}
+        >
+          <span>{status === "翻译中..." ? "翻译中" : "翻译"}</span>
+          {#if status === "翻译中..."}
+            <span class="loading-dots">...</span>
+          {/if}
+        </button>
+      </div>
     </header>
 
     <div class="editor-container">
       <section class="editor-pane source">
         <textarea
+          bind:this={inputEl}
           bind:value={input}
           placeholder="在此输入要翻译的文本..."
           spellcheck="false"
@@ -309,6 +443,17 @@
         <div class="pane-footer">
           <span class="char-count">{input.length} 字符</span>
           {#if input}
+            <button
+              class="clear-btn"
+              on:click={() => handleSpeak(input, source === "auto" ? "en" : source)}
+              title="朗读"
+            >
+              {#if speakingText === input}
+                <Square size={12} fill="currentColor" />
+              {:else}
+                <Volume2 size={12} />
+              {/if}
+            </button>
             <button class="clear-btn" on:click={() => (input = "")}
               ><X size={12} /> 清空</button
             >
@@ -316,15 +461,78 @@
         </div>
       </section>
 
-      <section class="editor-pane result">
-        <textarea
-          readonly
-          value={output}
-          placeholder="翻译结果..."
-          spellcheck="false"
-        ></textarea>
+      <section class="editor-pane result" class:compare-mode={compareMode}>
+        {#if compareMode}
+          <div class="compare-grid">
+            {#each (compareEngines || []) as eng}
+              <div class="compare-card">
+                <div class="compare-header">
+                  <span class="compare-title">{eng === "tencent" ? "腾讯" : "阿里"}</span>
+                  <div class="compare-header-right">
+                    {#if compareOutputs?.[eng]?.error}
+                      <span class="compare-error">失败</span>
+                    {/if}
+                    <button
+                      class="compare-copy-btn"
+                      class:active={speakingText === compareOutputs?.[eng]?.text}
+                      class:disabled={!compareOutputs?.[eng]?.text ||
+                        compareOutputs?.[eng]?.error}
+                      on:click={() =>
+                        handleSpeak(compareOutputs?.[eng]?.text, target)}
+                      title="朗读"
+                    >
+                      {#if speakingText === compareOutputs?.[eng]?.text}
+                        <Square size={12} fill="currentColor" />
+                      {:else}
+                        <Volume2 size={12} />
+                      {/if}
+                    </button>
+                    <button
+                      class="compare-copy-btn"
+                      class:success={copiedEngines[eng]}
+                      class:disabled={!compareOutputs?.[eng]?.text || compareOutputs?.[eng]?.error}
+                      on:click={() => handleCopyEngine(eng)}
+                      title="复制此结果"
+                    >
+                      {#if copiedEngines[eng]}
+                        <Check size={12} />
+                      {:else}
+                        <Copy size={12} />
+                      {/if}
+                    </button>
+                  </div>
+                </div>
+                <textarea
+                  readonly
+                  value={compareOutputs?.[eng]?.text || (compareOutputs?.[eng]?.error ? `错误：${compareOutputs[eng].error}` : "")}
+                  placeholder="翻译结果..."
+                  spellcheck="false"
+                ></textarea>
+              </div>
+            {/each}
+          </div>
+        {:else}
+          <textarea
+            readonly
+            value={output}
+            placeholder="翻译结果..."
+            spellcheck="false"
+          ></textarea>
+        {/if}
         <div class="pane-footer">
-          {#if output}
+          {#if !compareMode && output}
+            <button
+              class="action-btn"
+              on:click={() => handleSpeak(output, target)}
+              title="朗读"
+            >
+              {#if speakingText === output}
+                <Square size={14} fill="currentColor" />
+              {:else}
+                <Volume2 size={14} />
+              {/if}
+              朗读
+            </button>
             <button
               class="action-btn copy"
               on:click={handleCopy}
@@ -349,7 +557,8 @@
         {status}
       </div>
       <div class="status-item shortcut-hint">
-        <Keyboard size={12} /> <span>Ctrl + Enter 发送</span>
+        <Keyboard size={12} />
+        <span>Ctrl+Enter 发送 · Ctrl+L 聚焦 · Ctrl+K 清空 · Ctrl+J 交换 · Ctrl+Shift+H 历史</span>
       </div>
     </footer>
   </main>
@@ -366,6 +575,121 @@
 </div>
 
 <style>
+  .right-tools {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .mode-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-sec);
+    padding: 8px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .mode-btn:hover {
+    background: var(--bg-hover);
+    color: var(--text-main);
+  }
+  .mode-btn.active {
+    border-color: var(--primary);
+    color: var(--primary);
+    background: rgba(59, 130, 246, 0.08);
+  }
+
+  .compare-grid {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    height: 100%;
+    overflow-y: auto;
+  }
+  .compare-card {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0; /* 允许内部 textarea 撑满剩余高度 */
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 8px 10px;
+    background: rgba(0, 0, 0, 0.08);
+    overflow: hidden;
+  }
+  .compare-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+    font-size: 12px;
+    color: var(--text-sec);
+  }
+  .compare-header-right {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 40px; /* 预留复制按钮空间，避免出现/消失时抖动 */
+    justify-content: flex-end;
+  }
+  .compare-title {
+    font-weight: 700;
+    color: var(--text-main);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .compare-error {
+    color: #ef4444;
+    font-weight: 700;
+  }
+  .compare-copy-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-sec);
+    padding: 4px 8px;
+    border-radius: 6px;
+    font-size: 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+    min-width: 28px;
+    height: 24px;
+  }
+  .compare-copy-btn.disabled {
+    visibility: hidden; /* 保留占位，不触发布局抖动 */
+    pointer-events: none;
+  }
+  .compare-copy-btn:hover {
+    border-color: var(--text-sec);
+    background: var(--bg-hover);
+    color: var(--text-main);
+  }
+  .compare-copy-btn.success {
+    border-color: #10b981;
+    color: #10b981;
+    background: rgba(16, 185, 129, 0.1);
+  }
+  .compare-copy-btn.active {
+    border-color: var(--primary);
+    color: var(--primary);
+    background: rgba(59, 130, 246, 0.1);
+  }
+
+  .compare-card textarea {
+    flex: 1;
+    min-height: 0;
+    margin-top: 4px;
+    padding: 6px 0 0;
+    border-top: 1px dashed var(--border);
+    font-size: 14px;
+  }
   :root {
     --bg-base: #121212;
     --bg-sidebar: #181818;
@@ -725,9 +1049,13 @@
   }
   .editor-pane.source {
     border-right: 1px solid var(--border);
+    flex: 0.9; /* 略缩小原文区域高度 */
   }
   .editor-pane.result {
     background: var(--bg-base); /* 结果区稍微深一点/浅一点区分 */
+    /* 给结果内容更多空间 */
+    padding: 14px 16px;
+    flex: 1.1; /* 略放大翻译结果区域高度 */
   }
 
   textarea {
@@ -753,6 +1081,16 @@
     justify-content: flex-end;
     gap: 10px;
     margin-top: 10px;
+  }
+  /* 对照模式下隐藏 footer，让结果区域占满空间 */
+  .editor-pane.result.compare-mode .pane-footer {
+    height: 0;
+    margin-top: 0;
+    overflow: hidden;
+  }
+  /* 对照模式下让 compare-grid 占满整个空间 */
+  .editor-pane.result.compare-mode {
+    padding-bottom: 14px; /* 保持底部 padding，但移除 footer 空间 */
   }
   .char-count {
     font-size: 12px;

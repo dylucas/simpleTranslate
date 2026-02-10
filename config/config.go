@@ -19,6 +19,9 @@ type CloudConfig struct {
 	Tencent       ServiceConfig `json:"tencent"`
 	Aliyun        ServiceConfig `json:"aliyun"`
 	DefaultEngine string        `json:"defaultEngine"` // "tencent" 或 "aliyun"
+	// Multi-engine compare (optional; older configs may not have these)
+	CompareMode    bool     `json:"compareMode"`
+	CompareEngines []string `json:"compareEngines"`
 }
 
 // 获取配置文件的存放路径
