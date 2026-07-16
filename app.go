@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"simpleTranslate/translate"
 	"strings"
 	"sync"
@@ -38,6 +41,16 @@ type MultiTranslateResult struct {
 	AutoSrc string                           `json:"autoSrc"`
 	Target  string                           `json:"target"`
 	Results map[string]EngineTranslateResult `json:"results"`
+}
+
+// HistoryEntry 与前端历史记录结构保持一致
+type HistoryEntry struct {
+	ID     int64  `json:"id"`
+	Input  string `json:"input"`
+	Output string `json:"output"`
+	Source string `json:"source"`
+	Target string `json:"target"`
+	Time   string `json:"time"`
 }
 
 // 给前端调用的统一入口
@@ -200,4 +213,66 @@ func (a *App) TranslateMulti(text string, source string, target string, engines 
 		Results: results,
 	}
 	return res, nil
+}
+
+// TestConnection 用一次最小请求验证指定引擎的凭据是否可用
+func (a *App) TestConnection(engine string) error {
+	engine = strings.ToLower(strings.TrimSpace(engine))
+	probe := "hello"
+	switch engine {
+	case "aliyun":
+		_, err := translate.GetDetectLanguage(probe)
+		if err != nil {
+			return fmt.Errorf("阿里云连接测试失败: %v", err)
+		}
+		return nil
+	case "tencent", "":
+		_, err := translate.DetectLanguage(probe)
+		if err != nil {
+			return fmt.Errorf("混元连接测试失败: %v", err)
+		}
+		return nil
+	default:
+		return fmt.Errorf("未知引擎: %s", engine)
+	}
+}
+
+// getHistoryPath 返回历史记录文件路径
+func (a *App) getHistoryPath() string {
+	home, _ := os.UserHomeDir()
+	dir := filepath.Join(home, ".simple_translate")
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		os.MkdirAll(dir, 0755)
+	}
+	return filepath.Join(dir, "history.json")
+}
+
+// LoadHistory 读取本地持久化的历史记录
+func (a *App) LoadHistory() ([]HistoryEntry, error) {
+	path := a.getHistoryPath()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []HistoryEntry{}, nil
+		}
+		return nil, err
+	}
+	var entries []HistoryEntry
+	if err := json.Unmarshal(data, &entries); err != nil {
+		return nil, err
+	}
+	return entries, nil
+}
+
+// SaveHistory 将历史记录写入本地文件（上限 200 条，0600 权限）
+func (a *App) SaveHistory(entries []HistoryEntry) error {
+	if len(entries) > 200 {
+		entries = entries[:200]
+	}
+	path := a.getHistoryPath()
+	data, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0600)
 }

@@ -35,7 +35,7 @@ func CreateClient() (_result *openapi.Client, _err error) {
 		SetAccessKeySecret(config.Aliyun.SecretKey)
 	credentialClient, _err := credentials.NewCredential(credentialsConfig)
 	if _err != nil {
-		panic(_err)
+		return nil, _err
 	}
 
 	ecsConfig := &openapi.Config{}
@@ -140,10 +140,12 @@ func GetDetectLanguage(text string) (string, error) {
 	if _err != nil {
 		return "", _err
 	}
-	json.Unmarshal(bytes, &result)
+	if _err := json.Unmarshal(bytes, &result); _err != nil {
+		return "", _err
+	}
 
 	if result.StatusCode != 200 {
-		return "", nil
+		return "", fmt.Errorf("阿里云语言识别失败: HTTP %d", result.StatusCode)
 	}
 
 	return result.Body.DetectedLanguage, nil
@@ -183,19 +185,13 @@ func TranslateGeneral(text string, source string, target string) (string, error)
 	if _err != nil {
 		return "", _err
 	}
-	json.Unmarshal(bytes, &result)
+	if _err := json.Unmarshal(bytes, &result); _err != nil {
+		return "", _err
+	}
 
 	if result.StatusCode != 200 {
-		return "", nil
+		return "", fmt.Errorf("阿里云翻译失败: HTTP %d", result.StatusCode)
 	}
 
 	return result.Body.Data.Translated, nil
-}
-
-func main() {
-	resp, err := TranslateGeneral("hello world", "en", "zh")
-	if err != nil {
-		panic(err)
-	}
-	fmt.Printf("[LOG] %v\n", resp)
 }

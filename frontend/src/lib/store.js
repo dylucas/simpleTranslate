@@ -9,7 +9,7 @@ export const configStore = writable({
     // Multi-engine compare
     compareMode: false,
     compareEngines: ['tencent', 'aliyun'],
-    tencent: { secretId: "", secretKey: "", region: "ap-guangzhou" },
+    tencent: { secretId: "", secretKey: "", region: "" },
     aliyun: { secretId: "", secretKey: "", region: "cn-hangzhou" }
 });
 

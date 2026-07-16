@@ -1,7 +1,7 @@
 <script>
 // @ts-nocheck
 
-  import { TranslateText, TranslateMulti, GetConfig } from "../wailsjs/go/main/App";
+  import { TranslateText, TranslateMulti, GetConfig, LoadHistory, SaveHistory } from "../wailsjs/go/main/App";
   import {
     Languages,
     ArrowLeftRight,
@@ -16,6 +16,7 @@
     PanelLeftClose, // 使用更语义化的图标
     Volume2,
     Square,
+    Zap,
   } from "lucide-svelte";
   import Config from "./lib/Config.svelte";
   import History from "./lib/History.svelte";
@@ -28,6 +29,9 @@
   // --- 状态控制增强 ---
   let isProcessing = false; // 并发锁
   let speakingText = null; // 当前正在朗读的文本
+  let autoTranslate = true; // 自动翻译（防抖）
+  let suppressAuto = false; // 程序化修改 input 时抑制自动翻译
+  let autoTimer = null; // 防抖计时器
 
   // --- 核心状态 ---
   let input = "";
@@ -100,13 +104,10 @@
     window.speechSynthesis.speak(u);
   }
 
-  // 模拟持久化历史记录
+  // 历史记录变更时同步到后端（持久化）
   $: {
-    if (history.length > 0) {
-      localStorage.setItem(
-        "translate_history",
-        JSON.stringify(history.slice(0, 50)),
-      );
+    if (history !== undefined) {
+      SaveHistory(history).catch((e) => console.error("保存历史失败:", e));
     }
   }
 
@@ -137,9 +138,27 @@
 
   onMount(async () => {
     await initConfig();
-    const savedHistory = localStorage.getItem("translate_history");
-    if (savedHistory) history = JSON.parse(savedHistory);
+    // 从后端加载持久化历史记录
+    try {
+      const saved = await LoadHistory();
+      if (Array.isArray(saved)) history = saved;
+    } catch (e) {
+      console.error("加载历史失败:", e);
+    }
   });
+
+  // 自动翻译防抖：输入变化后延迟触发（可开关）
+  $: if (autoTranslate && !suppressAuto) {
+    handleAutoTranslate(input);
+  }
+
+  function handleAutoTranslate(val) {
+    clearTimeout(autoTimer);
+    if (!val || !val.trim() || val.trim().length < 1) return;
+    autoTimer = setTimeout(() => {
+      if (!isProcessing && val === input) translate();
+    }, 700);
+  }
 
   async function translate() {
     if (!input.trim() || isProcessing) return;
@@ -178,6 +197,15 @@
   }
 
   function addHistory(input, output, src, tgt) {
+    // 去重：与最近一条相同输入+语种则跳过
+    if (
+      history.length > 0 &&
+      history[0].input === input &&
+      history[0].source === src &&
+      history[0].target === tgt
+    ) {
+      return;
+    }
     const entry = {
       id: Date.now(),
       input,
@@ -189,12 +217,26 @@
         minute: "2-digit",
       }),
     };
-    history = [entry, ...history];
+    history = [entry, ...history].slice(0, 200);
   }
 
   function clearHistory() {
     history = []; // 清空历史记录
-    localStorage.removeItem("translate_history"); // 清空本地存储的历史记录
+    SaveHistory([]).catch((e) => console.error("清空历史失败:", e));
+  }
+
+  // 切换对照引擎选择（至少保留一个）
+  function toggleCompareEngine(eng) {
+    let next = Array.isArray(compareEngines) ? [...compareEngines] : [];
+    if (next.includes(eng)) {
+      if (next.length <= 1) return; // 至少保留一个
+      next = next.filter((e) => e !== eng);
+    } else {
+      next.push(eng);
+    }
+    updateAndSaveConfig("compareEngines", next);
+    // 切换后清空旧结果，触发重新翻译
+    compareOutputs = {};
   }
 
   function handleCopy() {
@@ -270,9 +312,11 @@
 
   function handleHistorySelect(event) {
     const item = event.detail;
+    suppressAuto = true; // 选择历史时抑制自动翻译
     input = item.input;
     output = item.output;
     showHistory = false;
+    setTimeout(() => (suppressAuto = false), 50);
   }
 
   function handleHistoryClose() {
@@ -345,7 +389,7 @@
             <button
               class:active={activeEngine === "tencent"}
               on:click={() => updateAndSaveConfig("defaultEngine", "tencent")}
-              >腾讯</button
+              >混元</button
             >
             <button
               class:active={activeEngine === "aliyun"}
@@ -413,6 +457,15 @@
       <div class="right-tools">
         <button
           class="mode-btn"
+          class:active={autoTranslate}
+          on:click={() => (autoTranslate = !autoTranslate)}
+          title={autoTranslate ? "关闭自动翻译" : "开启自动翻译"}
+        >
+          <Zap size={13} />
+          自动
+        </button>
+        <button
+          class="mode-btn"
           class:active={compareMode}
           on:click={() => updateAndSaveConfig("compareMode", !compareMode)}
           title="多引擎对照"
@@ -463,11 +516,25 @@
 
       <section class="editor-pane result" class:compare-mode={compareMode}>
         {#if compareMode}
+          <div class="compare-engine-bar">
+            <span class="engine-bar-label">对照引擎</span>
+            <div class="engine-toggle-pills">
+              {#each ["tencent", "aliyun"] as eng}
+                <button
+                  class="toggle-pill"
+                  class:active={(compareEngines || []).includes(eng)}
+                  on:click={() => toggleCompareEngine(eng)}
+                >
+                  {eng === "tencent" ? "混元" : "阿里"}
+                </button>
+              {/each}
+            </div>
+          </div>
           <div class="compare-grid">
             {#each (compareEngines || []) as eng}
               <div class="compare-card">
                 <div class="compare-header">
-                  <span class="compare-title">{eng === "tencent" ? "腾讯" : "阿里"}</span>
+                  <span class="compare-title">{eng === "tencent" ? "混元" : "阿里"}</span>
                   <div class="compare-header-right">
                     {#if compareOutputs?.[eng]?.error}
                       <span class="compare-error">失败</span>
@@ -502,22 +569,36 @@
                     </button>
                   </div>
                 </div>
-                <textarea
-                  readonly
-                  value={compareOutputs?.[eng]?.text || (compareOutputs?.[eng]?.error ? `错误：${compareOutputs[eng].error}` : "")}
-                  placeholder="翻译结果..."
-                  spellcheck="false"
-                ></textarea>
+                {#if isProcessing && !compareOutputs?.[eng]?.text && !compareOutputs?.[eng]?.error}
+                  <div class="skeleton-line"></div>
+                {:else}
+                  <textarea
+                    readonly
+                    value={compareOutputs?.[eng]?.text || (compareOutputs?.[eng]?.error ? `错误：${compareOutputs[eng].error}` : "")}
+                    placeholder="翻译结果..."
+                    spellcheck="false"
+                  ></textarea>
+                {/if}
               </div>
+            {:else}
+              <div class="empty-compare">请至少选择一个对照引擎</div>
             {/each}
           </div>
         {:else}
-          <textarea
-            readonly
-            value={output}
-            placeholder="翻译结果..."
-            spellcheck="false"
-          ></textarea>
+          {#if isProcessing && !output}
+            <div class="skeleton-block">
+              <div class="skeleton-line"></div>
+              <div class="skeleton-line short"></div>
+              <div class="skeleton-line"></div>
+            </div>
+          {:else}
+            <textarea
+              readonly
+              value={output}
+              placeholder="翻译结果..."
+              spellcheck="false"
+            ></textarea>
+          {/if}
         {/if}
         <div class="pane-footer">
           {#if !compareMode && output}
@@ -689,6 +770,84 @@
     padding: 6px 0 0;
     border-top: 1px dashed var(--border);
     font-size: 14px;
+  }
+
+  .compare-engine-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 8px;
+    flex-shrink: 0;
+  }
+  .engine-bar-label {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-sec);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  .engine-toggle-pills {
+    display: flex;
+    gap: 6px;
+  }
+  .toggle-pill {
+    border: 1px solid var(--border);
+    background: transparent;
+    color: var(--text-sec);
+    padding: 4px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .toggle-pill.active {
+    border-color: var(--primary);
+    color: var(--primary);
+    background: rgba(59, 130, 246, 0.08);
+  }
+  .toggle-pill:hover {
+    color: var(--text-main);
+  }
+  .empty-compare {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 1;
+    color: var(--text-sec);
+    font-size: 13px;
+    opacity: 0.6;
+  }
+
+  /* 加载骨架屏 */
+  .skeleton-block {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    padding: 4px 0;
+  }
+  .skeleton-line {
+    height: 16px;
+    border-radius: 6px;
+    background: linear-gradient(
+      90deg,
+      var(--bg-hover) 25%,
+      var(--border) 50%,
+      var(--bg-hover) 75%
+    );
+    background-size: 200% 100%;
+    animation: shimmer 1.4s ease-in-out infinite;
+  }
+  .skeleton-line.short {
+    width: 60%;
+  }
+  @keyframes shimmer {
+    0% {
+      background-position: 200% 0;
+    }
+    100% {
+      background-position: -200% 0;
+    }
   }
   :root {
     --bg-base: #121212;

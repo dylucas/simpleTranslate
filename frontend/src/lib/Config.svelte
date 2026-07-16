@@ -1,5 +1,5 @@
 <script>
-  import { SaveConfig, GetConfig } from "../../wailsjs/go/main/App";
+  import { SaveConfig, GetConfig, TestConnection } from "../../wailsjs/go/main/App";
   import {
     X,
     Save,
@@ -9,6 +9,8 @@
     Settings,
     KeyRound,
     Cpu,
+    CheckCircle2,
+    XCircle,
   } from "lucide-svelte";
   import { fade, fly } from "svelte/transition";
   import { configStore } from "./store";
@@ -19,6 +21,8 @@
   let saving = false;
   let message = "";
   let config;
+  // 连接测试状态：{ [engine]: { testing, ok, msg } }
+  let connStatus = {};
 
   // 每次打开同步 Store 数据
   $: if (show) {
@@ -43,6 +47,20 @@
       message = "保存失败";
     } finally {
       saving = false;
+    }
+  }
+
+  // 测试指定引擎的连接（先保存当前配置，再用最小请求验证凭据）
+  async function handleTest(engine) {
+    if (!config) return;
+    connStatus = { ...connStatus, [engine]: { testing: true, ok: false, msg: "" } };
+    try {
+      await SaveConfig(config);
+      configStore.set(config);
+      await TestConnection(engine);
+      connStatus = { ...connStatus, [engine]: { testing: false, ok: true, msg: "连接成功" } };
+    } catch (e) {
+      connStatus = { ...connStatus, [engine]: { testing: false, ok: false, msg: String(e) } };
     }
   }
 </script>
@@ -87,7 +105,7 @@
               <div class="item-control">
                 <div class="select-wrapper">
                   <select bind:value={config.defaultEngine}>
-                    <option value="tencent">腾讯云 (TMT)</option>
+                    <option value="tencent">腾讯混元 (hy-mt2-pro)</option>
                     <option value="aliyun">阿里云 (MT)</option>
                   </select>
                 </div>
@@ -97,44 +115,40 @@
         </section>
 
         <section class="settings-group">
-          <div class="group-title"><Cloud size={14} /> 腾讯云 TMT</div>
+          <div class="group-title"><Cloud size={14} /> 腾讯混元 hy-mt2-pro</div>
           <div class="input-card">
-            <div class="input-row">
-              <div class="input-field">
-                <label for="t-sid">Secret ID</label>
-                <div class="input-wrapper">
-                  <KeyRound size={14} />
-                  <input
-                    id="t-sid"
-                    type="password"
-                    bind:value={config.tencent.secretId}
-                    placeholder="Secret ID"
-                  />
-                </div>
-              </div>
-              <div class="input-field">
-                <label for="t-sk">Secret Key</label>
-                <div class="input-wrapper">
-                  <KeyRound size={14} />
-                  <input
-                    id="t-sk"
-                    type="password"
-                    bind:value={config.tencent.secretKey}
-                    placeholder="Secret Key"
-                  />
-                </div>
-              </div>
-            </div>
             <div class="input-field">
-              <label for="t-reg">服务地域</label>
+              <label for="t-sk">API Key</label>
               <div class="input-wrapper">
-                <Globe size={14} />
+                <KeyRound size={14} />
                 <input
-                  id="t-reg"
-                  bind:value={config.tencent.region}
-                  placeholder="默认: ap-beijing"
+                  id="t-sk"
+                  type="password"
+                  bind:value={config.tencent.secretKey}
+                  placeholder="TokenHub API Key (sk-...)"
                 />
               </div>
+            </div>
+            <div class="test-row">
+              <button
+                class="test-btn"
+                on:click={() => handleTest("tencent")}
+                disabled={connStatus?.tencent?.testing || !config?.tencent?.secretKey}
+              >
+                {#if connStatus?.tencent?.testing}
+                  <RefreshCcw size={14} class="spin" />
+                  测试中...
+                {:else}
+                  <RefreshCcw size={14} />
+                  测试连接
+                {/if}
+              </button>
+              {#if connStatus?.tencent?.msg}
+                <span class="test-msg" class:ok={connStatus?.tencent?.ok} class:err={!connStatus?.tencent?.ok}>
+                  {#if connStatus?.tencent?.ok}<CheckCircle2 size={13} />{:else}<XCircle size={13} />{/if}
+                  {connStatus.tencent.msg}
+                </span>
+              {/if}
             </div>
           </div>
         </section>
@@ -178,6 +192,27 @@
                   placeholder="默认: mt.cn-hangzhou.aliyuncs.com"
                 />
               </div>
+            </div>
+            <div class="test-row">
+              <button
+                class="test-btn"
+                on:click={() => handleTest("aliyun")}
+                disabled={connStatus?.aliyun?.testing || !config?.aliyun?.secretId}
+              >
+                {#if connStatus?.aliyun?.testing}
+                  <RefreshCcw size={14} class="spin" />
+                  测试中...
+                {:else}
+                  <RefreshCcw size={14} />
+                  测试连接
+                {/if}
+              </button>
+              {#if connStatus?.aliyun?.msg}
+                <span class="test-msg" class:ok={connStatus?.aliyun?.ok} class:err={!connStatus?.aliyun?.ok}>
+                  {#if connStatus?.aliyun?.ok}<CheckCircle2 size={13} />{:else}<XCircle size={13} />{/if}
+                  {connStatus.aliyun.msg}
+                </span>
+              {/if}
             </div>
           </div>
         </section>
@@ -419,6 +454,52 @@
   select:focus {
     border-color: var(--accent);
     box-shadow: 0 0 0 3px var(--accent-glow);
+  }
+
+  .test-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+  }
+  .test-btn {
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    color: var(--text-main);
+    padding: 8px 14px;
+    border-radius: 10px;
+    font-size: 13px;
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .test-btn:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+  }
+  .test-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .test-msg {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .test-msg.ok {
+    color: #10b981;
+  }
+  .test-msg.err {
+    color: #ef4444;
+    max-width: 280px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* Footer */

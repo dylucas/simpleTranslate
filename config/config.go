@@ -14,14 +14,17 @@ type ServiceConfig struct {
 	Region    string `json:"region"`
 }
 
-// CloudConfig 对应整个配置文件的结构
+// CloudConfig 对应整个配置文件的结构（单一数据源，供 main 包与 translate 包共用）
 type CloudConfig struct {
-	Tencent       ServiceConfig `json:"tencent"`
-	Aliyun        ServiceConfig `json:"aliyun"`
-	DefaultEngine string        `json:"defaultEngine"` // "tencent" 或 "aliyun"
-	// Multi-engine compare (optional; older configs may not have these)
+	Tencent          ServiceConfig `json:"tencent"`
+	Aliyun           ServiceConfig `json:"aliyun"`
+	DefaultEngine    string        `json:"defaultEngine"` // "tencent" 或 "aliyun"
+	IsDark           bool          `json:"isDark"`
+	SidebarCollapsed bool          `json:"sidebarCollapsed"`
+	// Multi-engine compare
 	CompareMode    bool     `json:"compareMode"`
 	CompareEngines []string `json:"compareEngines"`
+	PickBest       bool     `json:"pickBest"`
 }
 
 // 获取配置文件的存放路径
@@ -59,8 +62,8 @@ func SaveConfig(path string, cfg CloudConfig) error {
 		return fmt.Errorf("序列化失败: %v", err)
 	}
 
-	// 写入文件
-	err = os.WriteFile(path, data, 0644)
+	// 写入文件（0600：仅属主可读写，避免其他用户读取密钥）
+	err = os.WriteFile(path, data, 0600)
 	if err != nil {
 		return fmt.Errorf("写入文件失败: %v", err)
 	}
