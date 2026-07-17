@@ -158,8 +158,13 @@ func detectLanguageBestEffort(text string, engines []string) (string, error) {
 	return "", fmt.Errorf("语言识别失败")
 }
 
+// engineTimeout 单引擎翻译最大等待时间。
+// 与 translate 包的 HTTP/SDK 超时保持一致，确保超时后底层调用也会自然退出，
+// 不会因外层 select 提前返回而遗留 goroutine。
+const engineTimeout = 30 * time.Second
+
 // TranslateMulti 多引擎并发翻译：同一句话同时走多个引擎，返回并排结果。
-// 单引擎超时 30s，超时的引擎返回 "翻译超时" 错误而非阻塞整体。
+// 单引擎超时 engineTimeout，超时的引擎返回 "翻译超时" 错误而非阻塞整体。
 func (a *App) TranslateMulti(text string, source string, target string, engines []string) (*MultiTranslateResult, error) {
 	engines = normalizeEngines(engines)
 	src := source
@@ -209,7 +214,8 @@ func (a *App) TranslateMulti(text string, source string, target string, engines 
 				if o.err != nil {
 					r.Error = o.err.Error()
 				}
-			case <-time.After(30 * time.Second):
+			case <-time.After(engineTimeout):
+				// 底层 HTTP/SDK 已设 30s 超时，内层 goroutine 会自然退出，无需显式取消
 				r.Error = "翻译超时"
 			}
 

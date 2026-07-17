@@ -24,11 +24,9 @@
   // 连接测试状态：{ [engine]: { testing, ok, msg } }
   let connStatus = {};
 
-  // 每次打开同步 Store 数据
+  // 每次打开同步 Store 数据（使用 $configStore 自动订阅，避免手动 subscribe 带来的取消订阅问题）
   $: if (show) {
-    configStore.subscribe((val) => {
-      config = JSON.parse(JSON.stringify(val));
-    })();
+    config = JSON.parse(JSON.stringify($configStore));
   }
 
   async function handleSave() {

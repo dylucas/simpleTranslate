@@ -151,7 +151,11 @@ func GetDetectLanguage(text string) (string, error) {
 	params := CreateApiInfo("GetDetectLanguage")
 	body := map[string]interface{}{}
 	body["SourceText"] = tea.String(text)
-	runtime := &util.RuntimeOptions{}
+	// 显式设置读写超时，确保即使外层 select 触发超时，SDK 调用也能自然退出，避免 goroutine 泄漏
+	runtime := &util.RuntimeOptions{
+		ReadTimeout:    tea.Int(30000),
+		ConnectTimeout: tea.Int(30000),
+	}
 	request := &openapi.OpenApiRequest{
 		Body: body,
 	}
@@ -192,7 +196,11 @@ func TranslateGeneral(text string, source string, target string) (string, error)
 	body["TargetLanguage"] = tea.String(target)
 	body["SourceText"] = tea.String(text)
 	body["Scene"] = tea.String("general")
-	runtime := &util.RuntimeOptions{}
+	// 显式设置读写超时，与外层 30s 超时保持一致，避免 SDK 调用 Hang 导致 goroutine 泄漏
+	runtime := &util.RuntimeOptions{
+		ReadTimeout:    tea.Int(30000),
+		ConnectTimeout: tea.Int(30000),
+	}
 	request := &openapi.OpenApiRequest{
 		Query: openapiutil.Query(queries),
 		Body:  body,

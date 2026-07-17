@@ -53,6 +53,7 @@
   let compareEngines = ["tencent", "aliyun"];
   let source = "auto";
   let target = "zh";
+  let lastDetectedLang = ""; // 后端识别出的原始语种代码（如 "en"），供 retranslateOutput 在 auto 模式下使用
   let status = "准备就绪";
   let copied = false;
   let copiedEngines = {}; // { [engine]: boolean } 跟踪每个引擎的复制状态
@@ -130,7 +131,10 @@
     if (history === undefined) return;
     clearTimeout(historySaveTimer);
     historySaveTimer = setTimeout(() => {
-      SaveHistory(history).catch((e) => console.error("保存历史失败:", e));
+      SaveHistory(history).catch((e) => {
+        console.error("保存历史失败:", e);
+        showError("保存历史失败");
+      });
     }, 500);
   }
 
@@ -138,24 +142,18 @@
     scheduleHistorySave();
   }
 
-  // 从 Store 响应式获取配置
-  let currentConfig;
-  configStore.subscribe((value) => {
-    currentConfig = value;
-  });
-
-  // 这里的 activeEngine 和 isDark 直接引用 currentConfig
-  $: isDark = currentConfig?.isDark ?? true;
-  $: sidebarCollapsed = currentConfig?.sidebarCollapsed ?? false;
-  $: activeEngine = currentConfig?.defaultEngine || "tencent";
-  $: compareMode = !!(currentConfig?.compareMode ?? false);
-  $: compareEngines = Array.isArray(currentConfig?.compareEngines) && currentConfig.compareEngines.length
-    ? currentConfig.compareEngines
+  // 从 Store 响应式获取配置（使用 $configStore 自动订阅，组件销毁时自动取消，避免内存泄漏）
+  $: isDark = $configStore?.isDark ?? true;
+  $: sidebarCollapsed = $configStore?.sidebarCollapsed ?? false;
+  $: activeEngine = $configStore?.defaultEngine || "tencent";
+  $: compareMode = !!($configStore?.compareMode ?? false);
+  $: compareEngines = Array.isArray($configStore?.compareEngines) && $configStore.compareEngines.length
+    ? $configStore.compareEngines
     : ["tencent", "aliyun"];
 
   // 检测当前激活引擎是否缺少凭据，用于在 UI 上提示用户
   $: apiKeyMissing = (() => {
-    const cfg = currentConfig;
+    const cfg = $configStore;
     if (!cfg) return false;
     if (activeEngine === "aliyun") {
       return !cfg.aliyun?.secretId || !cfg.aliyun?.secretKey;
@@ -164,7 +162,7 @@
   })();
 
   // 剪贴板监听开关同步自配置
-  $: clipboardWatch = !!(currentConfig?.clipboardWatch ?? false);
+  $: clipboardWatch = !!($configStore?.clipboardWatch ?? false);
 
   // 响应式启停剪贴板轮询
   $: if (clipboardWatch !== undefined) {
@@ -228,18 +226,26 @@
   // 结果再翻译：把当前输出作为新输入，交换源/目标语言后重新翻译
   function retranslateOutput() {
     if (!output || isProcessing) return;
-    // 自动识别时，用上次检测结果作为新源语言
-    let newSource = source === "auto" ? autoDetectLang.replace(/^自动\s*\(|\)$/g, "") : source;
-    if (!langs[newSource]) newSource = "auto";
+    // output 是原 target 语言的文本：新源 = 原 target，新目标 = 原 source
+    // 原 source 为 auto 时，用后端识别出的真实语种（lastDetectedLang）作为新目标，
+    // 兜底为 zh（兼容识别失败或未翻译过的场景）
+    const origSource = source;
+    const origTarget = target;
+    let newSource = langs[origTarget] ? origTarget : "auto";
+    let newTarget = origSource === "auto"
+      ? (lastDetectedLang || "zh")
+      : origSource;
+    // 新源与新目标相同时，按习惯切换为反方向（zh↔en）
+    if (newTarget === newSource) {
+      newTarget = newSource === "zh" ? "en" : "zh";
+    }
+    // 启用再翻译后，原识别结果失效，清空避免下次误用
+    lastDetectedLang = "";
     suppressAuto = true;
-    const newInput = output;
+    input = output;
     output = "";
-    input = newInput;
     source = newSource;
-    target = newSource === "zh" ? "en" : "zh";
-    // 若原目标是 zh，再翻译目标为 en，反之亦然；保持简单互换
-    if (source === "zh") target = "en";
-    else if (source === "en") target = "zh";
+    target = newTarget;
     setTimeout(() => {
       suppressAuto = false;
       translate();
@@ -248,7 +254,7 @@
 
   // 切换主题的函数
   function toggleTheme() {
-    updateAndSaveConfig("isDark", !currentConfig.isDark);
+    updateAndSaveConfig("isDark", !$configStore.isDark);
   }
 
   // 切换侧边栏并保存状态
@@ -299,6 +305,7 @@
         const preferredEngine = activeEngine || engines[0];
         output = compareOutputs?.[preferredEngine]?.text || "";
         if (source === "auto") {
+          lastDetectedLang = res.autoSrc || "";
           let detected = langs[res.autoSrc] || res.autoSrc;
           autoDetectLang = `自动 (${detected})`;
         }
@@ -307,6 +314,7 @@
         output = res.text;
         compareOutputs = {};
         if (source === "auto") {
+          lastDetectedLang = res.autoSrc || "";
           let detected = langs[res.autoSrc] || res.autoSrc;
           autoDetectLang = `自动 (${detected})`;
         }
@@ -339,7 +347,9 @@
       output,
       source: src,
       target: tgt,
-      time: new Date().toLocaleTimeString([], {
+      time: new Date().toLocaleString([], {
+        month: "2-digit",
+        day: "2-digit",
         hour: "2-digit",
         minute: "2-digit",
       }),
@@ -427,7 +437,7 @@
     // 切换主题：Ctrl/Cmd + M
     if ((e.ctrlKey || e.metaKey) && (e.key === "m" || e.key === "M")) {
       e.preventDefault();
-      updateAndSaveConfig("isDark", !currentConfig.isDark);
+      updateAndSaveConfig("isDark", !$configStore.isDark);
       return;
     }
 
@@ -450,6 +460,9 @@
     suppressAuto = true; // 选择历史时抑制自动翻译
     input = item.input;
     output = item.output;
+    // 还原语言对，让用户看到原翻译上下文
+    if (item.source) source = item.source;
+    if (item.target) target = item.target;
     showHistory = false;
     setTimeout(() => (suppressAuto = false), 50);
   }
@@ -467,12 +480,13 @@
     refreshConfig();
   }
 
-  // 抽离出更新配置的逻辑
+  // 抽离出更新配置的逻辑：关闭设置面板时重新同步整个配置到 store，
+  // 确保所有派生状态（主题、引擎、对照、剪贴板监听等）保持一致
   async function refreshConfig() {
     try {
       const cfg = await GetConfig();
-      if (cfg?.defaultEngine) {
-        activeEngine = cfg.defaultEngine;
+      if (cfg) {
+        configStore.set(cfg);
       }
     } catch (e) {
       console.error("读取配置失败:", e);
