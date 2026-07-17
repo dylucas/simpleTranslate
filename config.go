@@ -21,6 +21,16 @@ func (a *App) GetConfig() (CloudConfig, error) {
 }
 
 // SaveConfig 提供给前端调用：保存配置
+// 凭据可能变更，需清空翻译/识别缓存以避免旧凭据结果被误用
 func (a *App) SaveConfig(cfg CloudConfig) error {
-	return config.SaveConfig(a.getConfigPath(), cfg)
+	if err := config.SaveConfig(a.getConfigPath(), cfg); err != nil {
+		return err
+	}
+	if a.translateCache != nil {
+		a.translateCache.clear()
+	}
+	if a.detectCache != nil {
+		a.detectCache.clear()
+	}
+	return nil
 }

@@ -14,10 +14,17 @@ import (
 
 type App struct {
 	ctx context.Context
+	// 翻译结果缓存：key = engine|source|target|text，避免重复调用 API
+	translateCache *lruCache
+	// 语种识别缓存：key = engine|text，同一文本不重复检测
+	detectCache *lruCache
 }
 
 func NewApp() *App {
-	return &App{}
+	return &App{
+		translateCache: newLRUCache(128),
+		detectCache:    newLRUCache(128),
+	}
 }
 
 func (a *App) startup(ctx context.Context) {
@@ -72,7 +79,7 @@ func (a *App) TranslateText(text string, source string, target string, engine st
 			}
 			engines = append(engines, other)
 		}
-		detected, err := detectLanguageBestEffort(text, engines)
+		detected, err := a.detectLanguageBestEffort(text, engines)
 		if err != nil {
 			return nil, err
 		}
@@ -81,6 +88,17 @@ func (a *App) TranslateText(text string, source string, target string, engine st
 
 	// 目标语言兜底
 	tgt := fallbackTarget(src, target)
+
+	// 命中缓存直接返回，避免重复调用 API
+	ck := cacheKey(engine, src, tgt, text)
+	if v, ok := a.translateCache.get(ck); ok {
+		return &TranslateResult{
+			Source:  source,
+			AutoSrc: src,
+			Target:  tgt,
+			Text:    v,
+		}, nil
+	}
 
 	result := ""
 	var err error
@@ -92,6 +110,9 @@ func (a *App) TranslateText(text string, source string, target string, engine st
 	if err != nil {
 		return nil, err
 	}
+
+	// 写入缓存供下次命中
+	a.translateCache.set(ck, result)
 
 	return &TranslateResult{
 		Source:  source,
@@ -139,9 +160,19 @@ func normalizeEngines(engines []string) []string {
 	return out
 }
 
-func detectLanguageBestEffort(text string, engines []string) (string, error) {
-	// Try in given order; prefer aliyun if present because it has dedicated API.
+// cacheKey 构造缓存键，用 \x1f（单元分隔符）分隔避免拼接歧义
+func cacheKey(parts ...string) string {
+	return strings.Join(parts, "\x1f")
+}
+
+// detectLanguageBestEffort 尝试多引擎识别语种，优先命中缓存。
+// Try in given order; prefer aliyun if present because it has dedicated API.
+func (a *App) detectLanguageBestEffort(text string, engines []string) (string, error) {
 	for _, e := range engines {
+		// 命中缓存直接返回，避免重复调用
+		if v, ok := a.detectCache.get(cacheKey(e, text)); ok {
+			return v, nil
+		}
 		var (
 			lang string
 			err  error
@@ -152,6 +183,7 @@ func detectLanguageBestEffort(text string, engines []string) (string, error) {
 			lang, err = translate.DetectLanguage(text)
 		}
 		if err == nil && lang != "" {
+			a.detectCache.set(cacheKey(e, text), lang)
 			return lang, nil
 		}
 	}
@@ -171,7 +203,7 @@ func (a *App) TranslateMulti(text string, source string, target string, engines 
 
 	// 自动识别一次，供所有引擎共用
 	if src == "" || src == "auto" {
-		detected, err := detectLanguageBestEffort(text, engines)
+		detected, err := a.detectLanguageBestEffort(text, engines)
 		if err != nil {
 			return nil, err
 		}
@@ -189,6 +221,18 @@ func (a *App) TranslateMulti(text string, source string, target string, engines 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			r := EngineTranslateResult{Engine: engine}
+
+			// 命中缓存直接用，跳过 API 调用
+			ck := cacheKey(engine, src, tgt, text)
+			if v, ok := a.translateCache.get(ck); ok {
+				r.Text = v
+				mu.Lock()
+				results[engine] = r
+				mu.Unlock()
+				return
+			}
+
 			type outcome struct {
 				text string
 				err  error
@@ -207,12 +251,14 @@ func (a *App) TranslateMulti(text string, source string, target string, engines 
 				done <- outcome{out, err}
 			}()
 
-			r := EngineTranslateResult{Engine: engine}
 			select {
 			case o := <-done:
 				r.Text = o.text
 				if o.err != nil {
 					r.Error = o.err.Error()
+				} else {
+					// 仅缓存成功结果
+					a.translateCache.set(ck, o.text)
 				}
 			case <-time.After(engineTimeout):
 				// 底层 HTTP/SDK 已设 30s 超时，内层 goroutine 会自然退出，无需显式取消

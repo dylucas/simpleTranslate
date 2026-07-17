@@ -32,6 +32,9 @@
 
   // --- 状态控制增强 ---
   let isProcessing = false; // 并发锁
+  let translateSeq = 0; // 请求序列号，用于丢弃过期响应
+  let lastTranslatedInput = ""; // 上次发起翻译的输入，用于判断响应是否过期
+  let pendingRetry = false; // 请求期间输入又变化，需重试
   let speakingText = null; // 当前正在朗读的文本
   let autoTranslate = true; // 自动翻译（防抖）
   let suppressAuto = false; // 程序化修改 input 时抑制自动翻译
@@ -285,47 +288,72 @@
     clearTimeout(autoTimer);
     if (!val || !val.trim() || val.trim().length < 1) return;
     autoTimer = setTimeout(() => {
-      if (!isProcessing && val === input) translate();
+      if (val === input) translate();
     }, 700);
   }
 
   async function translate() {
-    if (!input.trim() || isProcessing) return;
+    if (!input.trim()) return;
+    // 已有请求在途：标记需重试，让在途请求结束后重新触发
+    if (isProcessing) {
+      pendingRetry = true;
+      return;
+    }
     isProcessing = true;
     status = "翻译中...";
+    // 捕获本次请求的快照，用于响应返回时判断是否已过期
+    const seq = ++translateSeq;
+    const reqInput = input;
+    const reqSource = source;
+    const reqTarget = target;
+    const reqCompare = compareMode;
+    lastTranslatedInput = reqInput;
+    pendingRetry = false;
     try {
       let res;
-      if (compareMode) {
-        const engines = Array.isArray(compareEngines) ? compareEngines : ["tencent", "aliyun"];
-        res = await TranslateMulti(input, source, target, engines);
+      const engines = reqCompare
+        ? (Array.isArray(compareEngines) ? compareEngines : ["tencent", "aliyun"])
+        : [];
+      if (reqCompare) {
+        res = await TranslateMulti(reqInput, reqSource, reqTarget, engines);
+      } else {
+        res = await TranslateText(reqInput, reqSource, reqTarget, activeEngine);
+      }
+      // 丢弃过期响应：若期间用户又改了输入，结果不再应用
+      if (seq !== translateSeq) return;
+
+      if (reqCompare) {
         compareOutputs = res.results || {};
         const preferredEngine = activeEngine || engines[0];
         output = compareOutputs?.[preferredEngine]?.text || "";
-        if (source === "auto") {
-          lastDetectedLang = res.autoSrc || "";
-          let detected = langs[res.autoSrc] || res.autoSrc;
-          autoDetectLang = `自动 (${detected})`;
-        }
       } else {
-        res = await TranslateText(input, source, target, activeEngine);
         output = res.text;
         compareOutputs = {};
-        if (source === "auto") {
-          lastDetectedLang = res.autoSrc || "";
-          let detected = langs[res.autoSrc] || res.autoSrc;
-          autoDetectLang = `自动 (${detected})`;
-        }
       }
-      target = res.target || target;
+      if (reqSource === "auto") {
+        lastDetectedLang = res.autoSrc || "";
+        let detected = langs[res.autoSrc] || res.autoSrc;
+        autoDetectLang = `自动 (${detected})`;
+      }
+      // 仅当用户未在请求期间手动改 target 时，才同步后端兜底后的 target
+      if (reqTarget === target) {
+        target = res.target || target;
+      }
       status = "完成";
-      // 添加到历史记录
-      addHistory(input, output, source, target);
+      addHistory(reqInput, output, reqSource, target);
     } catch (e) {
+      if (seq !== translateSeq) return;
       status = "翻译失败";
       showError(e);
       console.error(e);
+    } finally {
+      isProcessing = false;
+      // 请求期间输入又变化，重新触发一次翻译
+      if (pendingRetry && input.trim() && input !== lastTranslatedInput) {
+        pendingRetry = false;
+        translate();
+      }
     }
-    isProcessing = false;
   }
 
   function addHistory(input, output, src, tgt) {
@@ -490,6 +518,9 @@
     <div class="error-toast" transition:fade={{ duration: 200 }}>
       <AlertCircle size={16} />
       <span class="error-toast-msg">{errorToast.msg}</span>
+      <button class="error-toast-retry" on:click={() => { errorToast = null; translate(); }}>
+        重试
+      </button>
       <button class="error-toast-close" on:click={() => (errorToast = null)}>
         <X size={14} />
       </button>
@@ -701,10 +732,13 @@
           </div>
           <div class="compare-grid">
             {#each (compareEngines || []) as eng}
-              <div class="compare-card">
+              <div class="compare-card" class:refreshing={isProcessing}>
                 <div class="compare-header">
                   <span class="compare-title">{eng === "tencent" ? "混元" : "阿里"}</span>
                   <div class="compare-header-right">
+                    {#if isProcessing && compareOutputs?.[eng]?.text && !compareOutputs?.[eng]?.error}
+                      <span class="compare-refreshing" title="正在更新">刷新中</span>
+                    {/if}
                     {#if compareOutputs?.[eng]?.error}
                       <span class="compare-error">失败</span>
                     {/if}
@@ -855,6 +889,20 @@
     flex: 1;
     word-break: break-word;
   }
+  .error-toast-retry {
+    background: rgba(255, 255, 255, 0.18);
+    border: none;
+    color: #fff;
+    cursor: pointer;
+    padding: 3px 10px;
+    border-radius: 4px;
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-medium);
+    transition: background 0.2s;
+  }
+  .error-toast-retry:hover {
+    background: rgba(255, 255, 255, 0.3);
+  }
   .error-toast-close {
     background: transparent;
     border: none;
@@ -945,6 +993,23 @@
     padding: 8px 10px;
     background: rgba(0, 0, 0, 0.08);
     overflow: hidden;
+    transition: opacity 0.2s;
+  }
+  .compare-card.refreshing {
+    opacity: 0.85;
+  }
+  .compare-refreshing {
+    color: var(--primary);
+    font-weight: var(--fw-medium);
+    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 4px;
+    background: var(--primary-bg, rgba(99, 102, 241, 0.12));
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; }
   }
   .compare-header {
     display: flex;
