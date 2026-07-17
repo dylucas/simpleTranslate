@@ -241,18 +241,13 @@
   .overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.55);
+    background: var(--bg-overlay);
     backdrop-filter: blur(12px);
     -webkit-backdrop-filter: blur(12px);
     display: flex;
     align-items: center;
     justify-content: center;
-    z-index: 1000;
-  }
-
-  /* 浅色模式下使用更轻的遮罩 */
-  .overlay.light-mode {
-    background: rgba(15, 23, 42, 0.35);
+    z-index: var(--z-modal);
   }
 
   .modal {
@@ -260,8 +255,8 @@
     max-width: 95vw;
     background: var(--bg-elevated);
     border: 1px solid var(--border);
-    border-radius: 24px;
-    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    border-radius: var(--radius-2xl);
+    box-shadow: var(--shadow-xl);
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -283,15 +278,16 @@
   }
 
   .brand-icon {
-    background: var(--primary);
-    color: white;
+    background: var(--accent-grad);
+    color: var(--text-inverse);
     width: 42px;
     height: 42px;
     display: flex;
     align-items: center;
     justify-content: center;
-    border-radius: 12px;
-    box-shadow: 0 4px 12px var(--accent-glow);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-glow);
+    flex-shrink: 0;
   }
 
   .header-info h3 {
@@ -474,10 +470,10 @@
     font-weight: 500;
   }
   .test-msg.ok {
-    color: #10b981;
+    color: var(--success);
   }
   .test-msg.err {
-    color: #ef4444;
+    color: var(--danger);
     max-width: 280px;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -505,23 +501,27 @@
   }
 
   .primary-btn {
-    background: var(--primary);
-    color: white;
+    background: var(--accent-grad);
+    color: var(--text-inverse);
     border: none;
     padding: 10px 20px;
-    border-radius: 10px;
-    font-size: 14px;
-    font-weight: 600;
+    border-radius: var(--radius-md);
+    font-size: var(--fs-md);
+    font-weight: var(--fw-semibold);
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--sp-2);
     cursor: pointer;
-    transition: 0.2s;
+    box-shadow: var(--shadow-glow);
+    transition: transform var(--t-fast) var(--ease-standard),
+      filter var(--t-base) var(--ease-standard),
+      box-shadow var(--t-base) var(--ease-standard);
   }
 
   .primary-btn:hover {
-    filter: brightness(1.1);
+    filter: brightness(1.08);
     transform: translateY(-1px);
+    box-shadow: 0 10px 28px -4px var(--accent-glow);
   }
 
   .primary-btn:disabled {

@@ -1,24 +1,216 @@
-html {
-  background-color: #0f1115;
-  color: #e8ebf0;
-}
+/* ==========================================================================
+   simpleTranslate · 全局样式与设计令牌系统
+   设计语言：Aurora — 现代、沉静、专注
+   令牌集中于此，作为单一事实来源；组件内 <style> 仅消费令牌，不再重复定义。
+   ========================================================================== */
 
-body {
-  margin: 0;
-  color: #e8ebf0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-    "Helvetica Neue", "Nunito", sans-serif;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  text-rendering: optimizeLegibility;
-}
-
+/* ---------- 字体 ---------- */
 @font-face {
   font-family: "Nunito";
   font-style: normal;
   font-weight: 400;
   src: local(""),
     url("assets/fonts/nunito-v16-latin-regular.woff2") format("woff2");
+  font-display: swap;
+}
+
+/* ==========================================================================
+   设计令牌 · 暗色主题（默认）
+   ========================================================================== */
+:root {
+  /* —— 品牌主色（靛蓝 / 紫罗兰，更具现代辨识度）—— */
+  --primary: #6366f1;          /* indigo-500 */
+  --primary-hover: #4f46e5;   /* indigo-600 */
+  --primary-active: #4338ca;  /* indigo-700 */
+  --primary-soft: rgba(99, 102, 241, 0.12);
+  --accent-glow: rgba(99, 102, 241, 0.28);
+  --accent-grad: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+
+  /* —— 语义色 —— */
+  --success: #10b981;
+  --success-soft: rgba(16, 185, 129, 0.12);
+  --warning: #f59e0b;
+  --warning-soft: rgba(245, 158, 11, 0.12);
+  --danger: #ef4444;
+  --danger-soft: rgba(239, 68, 68, 0.12);
+  --info: #06b6d4;
+  --info-soft: rgba(6, 182, 212, 0.12);
+
+  /* —— 表面 / 背景层级 —— */
+  --bg-base: #0d0f14;         /* 最底层：深邃墨色 */
+  --bg-sidebar: #11141b;
+  --bg-surface: #161a23;
+  --bg-elevated: #1c2130;
+  --bg-input: #0b0d12;
+  --bg-hover: #232838;
+  --bg-overlay: rgba(0, 0, 0, 0.55);
+
+  /* —— 边框 —— */
+  --border: #262c3d;
+  --border-soft: #1f2433;
+  --border-strong: #353c52;
+
+  /* —— 文本 —— */
+  --text-main: #e8ebf0;
+  --text-sec: #98a2b3;
+  --text-muted: #6b7280;
+  --text-inverse: #ffffff;
+
+  /* —— 阴影（分层、柔和）—— */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.45),
+    0 2px 4px -2px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 12px 24px -6px rgba(0, 0, 0, 0.5);
+  --shadow-xl: 0 24px 48px -12px rgba(0, 0, 0, 0.6);
+  --shadow-glow: 0 8px 24px -4px var(--accent-glow);
+
+  /* —— 圆角尺度 —— */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+  --radius-2xl: 24px;
+  --radius-full: 9999px;
+
+  /* —— 间距（4px 基础栅格）—— */
+  --sp-0: 0;
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+
+  /* —— 排版尺度（Major Third 1.250）—— */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-base: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+  --fs-xl: 18px;
+  --fs-2xl: 22px;
+  --fs-3xl: 28px;
+  --lh-tight: 1.25;
+  --lh-snug: 1.4;
+  --lh-normal: 1.5;
+  --lh-relaxed: 1.6;
+
+  /* —— 字重 —— */
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+
+  /* —— 字间距 —— */
+  --tracking-tight: -0.01em;
+  --tracking-normal: 0;
+  --tracking-wide: 0.02em;
+  --tracking-wider: 0.05em;
+  --tracking-widest: 0.08em;
+
+  /* —— 动效 —— */
+  --t-fast: 0.15s;
+  --t-base: 0.2s;
+  --t-slow: 0.3s;
+  --ease-standard: cubic-bezier(0.4, 0, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-out: cubic-bezier(0, 0, 0.2, 1);
+
+  /* —— 层级 z-index —— */
+  --z-base: 1;
+  --z-sidebar: 10;
+  --z-drawer: 50;
+  --z-banner: 100;
+  --z-modal: 1000;
+  --z-toast: 2000;
+
+  /* —— 结构尺寸 —— */
+  --sidebar-w: 240px;
+  --sidebar-collapsed-w: 72px;
+  --header-h: 64px;
+  --statusbar-h: 32px;
+
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", "Nunito", "PingFang SC", "Hiragino Sans GB",
+    "Microsoft YaHei", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas,
+    monospace;
+}
+
+/* ==========================================================================
+   设计令牌 · 浅色主题
+   ========================================================================== */
+.light-mode {
+  --primary: #4f46e5;          /* indigo-600 */
+  --primary-hover: #4338ca;   /* indigo-700 */
+  --primary-active: #3730a3;  /* indigo-800 */
+  --primary-soft: rgba(79, 70, 229, 0.08);
+  --accent-glow: rgba(79, 70, 229, 0.18);
+  --accent-grad: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+
+  --success: #059669;
+  --success-soft: rgba(5, 150, 105, 0.1);
+  --warning: #d97706;
+  --warning-soft: rgba(217, 119, 6, 0.1);
+  --danger: #dc2626;
+  --danger-soft: rgba(220, 38, 38, 0.08);
+  --info: #0891b2;
+  --info-soft: rgba(8, 145, 178, 0.1);
+
+  --bg-base: #f7f8fc;
+  --bg-sidebar: #ffffff;
+  --bg-surface: #ffffff;
+  --bg-elevated: #ffffff;
+  --bg-input: #f3f5fa;
+  --bg-hover: #eef1f7;
+  --bg-overlay: rgba(15, 23, 42, 0.35);
+
+  --border: #e4e8f0;
+  --border-soft: #eef1f7;
+  --border-strong: #d1d8e4;
+
+  --text-main: #16192a;
+  --text-sec: #5b6478;
+  --text-muted: #8b94a7;
+  --text-inverse: #ffffff;
+
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-md: 0 4px 6px -1px rgba(15, 23, 42, 0.08),
+    0 2px 4px -2px rgba(15, 23, 42, 0.04);
+  --shadow-lg: 0 12px 24px -6px rgba(15, 23, 42, 0.12);
+  --shadow-xl: 0 24px 48px -12px rgba(15, 23, 42, 0.18);
+  --shadow-glow: 0 8px 24px -4px var(--accent-glow);
+}
+
+/* ==========================================================================
+   全局重置与基础排版
+   ========================================================================== */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  background-color: var(--bg-base);
+  color: var(--text-main);
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  color: var(--text-main);
+  font-family: var(--font-sans);
+  font-size: var(--fs-base);
+  line-height: var(--lh-normal);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  text-rendering: optimizeLegibility;
+  font-feature-settings: "cv02", "cv03", "cv04", "cv11";
 }
 
 #app {
@@ -27,10 +219,11 @@ body {
 
 /* 全局选区颜色 */
 ::selection {
-  background: rgba(59, 130, 246, 0.3);
+  background: var(--primary-soft);
+  color: var(--text-main);
 }
 
-/* 全局滚动条 */
+/* 全局滚动条（细弱、与主题协调） */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -39,16 +232,32 @@ body {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(128, 128, 128, 0.3);
-  border-radius: 8px;
+  background: var(--border-strong);
+  border-radius: var(--radius-full);
+  border: 2px solid transparent;
+  background-clip: padding-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(128, 128, 128, 0.5);
+  background: var(--text-muted);
+  background-clip: padding-box;
+  border: 2px solid transparent;
 }
 
-/* 键盘可访问性：聚焦环（组件内若有专属聚焦样式则自然覆盖） */
+/* 键盘可访问性：聚焦环 */
 :focus-visible {
-  outline: 2px solid var(--primary, #3b82f6);
+  outline: 2px solid var(--primary);
   outline-offset: 2px;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
+}
+
+/* 可读性：尊重用户动效偏好 */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

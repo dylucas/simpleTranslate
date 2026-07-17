@@ -134,9 +134,10 @@
     .backdrop {
         position: fixed;
         inset: 0;
-        background: rgba(0, 0, 0, 0.5);
+        background: var(--bg-overlay);
         backdrop-filter: blur(2px);
-        z-index: 50;
+        -webkit-backdrop-filter: blur(2px);
+        z-index: var(--z-drawer);
     }
     .drawer {
         position: fixed;
@@ -149,7 +150,7 @@
         border-left: 1px solid var(--border);
         display: flex;
         flex-direction: column;
-        box-shadow: -4px 0 15px rgba(0, 0, 0, 0.3);
+        box-shadow: var(--shadow-lg);
     }
     .drawer-header {
         height: 64px;
