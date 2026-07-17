@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 
 	"simpleTranslate/config"
 
@@ -14,72 +15,75 @@ import (
 	"github.com/aliyun/credentials-go/credentials"
 )
 
-// Description:
-//
-// 使用凭据初始化账号Client
-//
-// @return Client
-//
-// @throws Exception
-func CreateClient() (_result *openapi.Client, _err error) {
-	// 工程代码建议使用更安全的无AK方式，凭据配置方式请参见：https://help.aliyun.com/document_detail/378661.html。
-	// 使用AK 初始化Credentials Client。
-	configPath := config.GetConfigPath()
-	config := config.GetConfig(configPath)
+// 默认阿里云翻译服务地址
+const defaultAliyunEndpoint = "mt.cn-hangzhou.aliyuncs.com"
+
+// 客户端缓存：凭据未变时复用 openapi.Client，避免每次请求都重建凭据客户端。
+var (
+	aliyunClientMu sync.Mutex
+	aliyunClient   *openapi.Client
+	aliyunCredsSig string // secretId+secretKey+region 的签名，用于感知凭据变更
+)
+
+// CreateClient 获取或构建阿里云 openapi.Client。
+// 当凭据签名未变化时直接复用缓存的客户端，避免重复初始化开销。
+func CreateClient() (*openapi.Client, error) {
+	cfg, err := config.GetConfig(config.GetConfigPath())
+	if err != nil {
+		return nil, fmt.Errorf("读取配置失败: %w", err)
+	}
+	if strings.TrimSpace(cfg.Aliyun.SecretId) == "" || strings.TrimSpace(cfg.Aliyun.SecretKey) == "" {
+		return nil, fmt.Errorf("未配置阿里云 AccessKey，请在设置中填写")
+	}
+
+	credsSig := cfg.Aliyun.SecretId + ":" + cfg.Aliyun.SecretKey + ":" + cfg.Aliyun.Region
+
+	aliyunClientMu.Lock()
+	defer aliyunClientMu.Unlock()
+	if aliyunClient != nil && aliyunCredsSig == credsSig {
+		return aliyunClient, nil
+	}
+
 	credentialsConfig := new(credentials.Config).
-		// 凭证类型。
 		SetType("access_key").
-		// 设置为AccessKey ID值。
-		SetAccessKeyId(config.Aliyun.SecretId).
-		// 设置为AccessKey Secret值。
-		SetAccessKeySecret(config.Aliyun.SecretKey)
-	credentialClient, _err := credentials.NewCredential(credentialsConfig)
-	if _err != nil {
-		return nil, _err
+		SetAccessKeyId(cfg.Aliyun.SecretId).
+		SetAccessKeySecret(cfg.Aliyun.SecretKey)
+	credentialClient, err := credentials.NewCredential(credentialsConfig)
+	if err != nil {
+		return nil, err
 	}
 
 	ecsConfig := &openapi.Config{}
-
-	// Endpoint 请参考 https://api.aliyun.com/product/alimt
-	if config.Aliyun.Region == "" {
-		ecsConfig.Endpoint = tea.String("mt.cn-hangzhou.aliyuncs.com")
+	if strings.TrimSpace(cfg.Aliyun.Region) == "" {
+		ecsConfig.Endpoint = tea.String(defaultAliyunEndpoint)
 	} else {
-		ecsConfig.Endpoint = tea.String(config.Aliyun.Region)
+		ecsConfig.Endpoint = tea.String(cfg.Aliyun.Region)
 	}
 	ecsConfig.Credential = credentialClient
-	_result = &openapi.Client{}
-	_result, _err = openapi.NewClient(ecsConfig)
-	return _result, _err
+
+	client, err := openapi.NewClient(ecsConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	aliyunClient = client
+	aliyunCredsSig = credsSig
+	return client, nil
 }
 
-// Description:
-//
-// # API 相关
-//
-// @param path - string Path parameters
-//
-// @return OpenApi.Params
-func CreateApiInfo(apiName string) (_result *openapi.Params) {
-	params := &openapi.Params{
-		// 接口名称
-		Action: tea.String(apiName),
-		// 接口版本
-		Version: tea.String("2018-10-12"),
-		// 接口协议
-		Protocol: tea.String("HTTPS"),
-		// 接口 HTTP 方法
-		Method:   tea.String("POST"),
-		AuthType: tea.String("AK"),
-		Style:    tea.String("RPC"),
-		// 接口 PATH
-		Pathname: tea.String("/"),
-		// 接口请求体内容格式
+// CreateApiInfo 构造阿里云 RPC 接口请求参数
+func CreateApiInfo(apiName string) *openapi.Params {
+	return &openapi.Params{
+		Action:      tea.String(apiName),
+		Version:     tea.String("2018-10-12"),
+		Protocol:    tea.String("HTTPS"),
+		Method:      tea.String("POST"),
+		AuthType:    tea.String("AK"),
+		Style:       tea.String("RPC"),
+		Pathname:    tea.String("/"),
 		ReqBodyType: tea.String("formData"),
-		// 接口响应体内容格式
-		BodyType: tea.String("json"),
+		BodyType:    tea.String("json"),
 	}
-	_result = params
-	return _result
 }
 
 type GetDetectLanguageResponse struct {
@@ -92,56 +96,55 @@ type GetDetectLanguageResponse struct {
 	StatusCode int               `json:"statusCode"`
 }
 
-// 最外层响应结构
+// APIResponse 最外层响应结构
 type APIResponse struct {
 	Body       ResponseBody      `json:"body"`
-	Headers    map[string]string `json:"headers"` // 可选：如果不需要可省略
+	Headers    map[string]string `json:"headers"`
 	StatusCode int               `json:"statusCode"`
 }
 
-// Body 内容
+// ResponseBody 阿里云翻译接口响应体
 type ResponseBody struct {
 	Code      int            `json:"Code"`
 	Data      TranslatedData `json:"Data"`
 	RequestID string         `json:"RequestId"`
 }
 
-// Data 内容（翻译结果）
+// TranslatedData 翻译结果数据
 type TranslatedData struct {
 	Translated string `json:"Translated"`
 	WordCount  int    `json:"WordCount"`
 }
 
+// GetDetectLanguage 调用阿里云接口识别语种，返回前端约定的语言代码
 func GetDetectLanguage(text string) (string, error) {
-	client, _err := CreateClient()
-	if _err != nil {
-		return "", _err
+	client, err := CreateClient()
+	if err != nil {
+		return "", err
 	}
 	text = strings.TrimSpace(text)
 	text = strings.ReplaceAll(text, "\n", " ")
 
 	params := CreateApiInfo("GetDetectLanguage")
-	// body params
 	body := map[string]interface{}{}
 	body["SourceText"] = tea.String(text)
-	// runtime options
 	runtime := &util.RuntimeOptions{}
 	request := &openapi.OpenApiRequest{
 		Body: body,
 	}
-	// 返回值实际为 Map 类型，可从 Map 中获得三类数据：响应体 body、响应头 headers、HTTP 返回的状态码 statusCode。
-	resp, _err := client.CallApi(params, request, runtime)
-	if _err != nil {
-		return "", _err
+
+	resp, err := client.CallApi(params, request, runtime)
+	if err != nil {
+		return "", err
 	}
 
 	var result GetDetectLanguageResponse
-	bytes, _err := json.Marshal(resp)
-	if _err != nil {
-		return "", _err
+	bytes, err := json.Marshal(resp)
+	if err != nil {
+		return "", err
 	}
-	if _err := json.Unmarshal(bytes, &result); _err != nil {
-		return "", _err
+	if err := json.Unmarshal(bytes, &result); err != nil {
+		return "", err
 	}
 
 	if result.StatusCode != 200 {
@@ -151,42 +154,39 @@ func GetDetectLanguage(text string) (string, error) {
 	return result.Body.DetectedLanguage, nil
 }
 
+// TranslateGeneral 调用阿里云通用翻译接口
 func TranslateGeneral(text string, source string, target string) (string, error) {
-	client, _err := CreateClient()
-	if _err != nil {
-		return "", _err
+	client, err := CreateClient()
+	if err != nil {
+		return "", err
 	}
 
 	params := CreateApiInfo("TranslateGeneral")
-	// query params
 	queries := map[string]interface{}{}
-	// queries["Context"] = tea.String("早上我在家里吃了面包")
-	// body params
 	body := map[string]interface{}{}
 	body["FormatType"] = tea.String("text")
 	body["SourceLanguage"] = tea.String(source)
 	body["TargetLanguage"] = tea.String(target)
 	body["SourceText"] = tea.String(text)
 	body["Scene"] = tea.String("general")
-	// runtime options
 	runtime := &util.RuntimeOptions{}
 	request := &openapi.OpenApiRequest{
 		Query: openapiutil.Query(queries),
 		Body:  body,
 	}
-	// 返回值实际为 Map 类型，可从 Map 中获得三类数据：响应体 body、响应头 headers、HTTP 返回的状态码 statusCode。
-	resp, _err := client.CallApi(params, request, runtime)
-	if _err != nil {
-		return "", _err
+
+	resp, err := client.CallApi(params, request, runtime)
+	if err != nil {
+		return "", err
 	}
 
 	var result APIResponse
-	bytes, _err := json.Marshal(resp)
-	if _err != nil {
-		return "", _err
+	bytes, err := json.Marshal(resp)
+	if err != nil {
+		return "", err
 	}
-	if _err := json.Unmarshal(bytes, &result); _err != nil {
-		return "", _err
+	if err := json.Unmarshal(bytes, &result); err != nil {
+		return "", err
 	}
 
 	if result.StatusCode != 200 {

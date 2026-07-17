@@ -6,14 +6,18 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"simpleTranslate/config"
 	"strings"
 	"time"
+
+	"simpleTranslate/config"
 )
 
 // hy-mt2-pro 模型调用地址（腾讯混元 TokenHub，OpenAI 兼容协议）
 const hunyuanEndpoint = "https://tokenhub.tencentmaas.com/v1/chat/completions"
 const hunyuanModel = "hy-mt2-pro"
+
+// httpClient 复用连接；30s 超时兼顾响应速度与稳定性
+var httpClient = &http.Client{Timeout: 30 * time.Second}
 
 // langCodeToName 将应用内部语种代码映射为 hy-mt2-pro 期望的中文目标语种名
 var langCodeToName = map[string]string{
@@ -47,18 +51,21 @@ var nameToLangCode = map[string]string{
 	"西语":   "es",
 }
 
-// httpClient 复用连接
-var httpClient = &http.Client{Timeout: 60 * time.Second}
-
-func getApiKey() string {
-	configPath := config.GetConfigPath()
-	cfg := config.GetConfig(configPath)
-	return strings.TrimSpace(cfg.Tencent.SecretKey)
+// getApiKey 读取腾讯混元 API Key（直接复用 config 包的内存缓存）
+func getApiKey() (string, error) {
+	cfg, err := config.GetConfig(config.GetConfigPath())
+	if err != nil {
+		return "", fmt.Errorf("读取配置失败: %w", err)
+	}
+	return strings.TrimSpace(cfg.Tencent.SecretKey), nil
 }
 
 // chatCompletion 调用混元 OpenAI 兼容接口，返回 message.content
 func chatCompletion(prompt string) (string, error) {
-	apiKey := getApiKey()
+	apiKey, err := getApiKey()
+	if err != nil {
+		return "", err
+	}
 	if apiKey == "" {
 		return "", fmt.Errorf("未配置腾讯混元 API Key，请在设置中填写")
 	}

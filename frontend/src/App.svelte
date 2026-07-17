@@ -17,14 +17,20 @@
     Volume2,
     Square,
     Zap,
+    AlertCircle,
+    Clipboard,
+    CornerDownLeft,
   } from "lucide-svelte";
   import Config from "./lib/Config.svelte";
   import History from "./lib/History.svelte";
+  import Shortcuts from "./lib/Shortcuts.svelte";
   // @ts-ignore
-  import { onMount } from "svelte";
+  import { onMount, onDestroy } from "svelte";
   // @ts-ignore
   import { fade } from "svelte/transition";
   import { configStore, initConfig, updateAndSaveConfig } from "./lib/store";
+  // @ts-ignore
+  import { ClipboardGetText } from "../wailsjs/runtime/runtime";
 
   // --- 状态控制增强 ---
   let isProcessing = false; // 并发锁
@@ -32,6 +38,12 @@
   let autoTranslate = true; // 自动翻译（防抖）
   let suppressAuto = false; // 程序化修改 input 时抑制自动翻译
   let autoTimer = null; // 防抖计时器
+  let historySaveTimer = null; // 历史保存防抖计时器
+  let errorToast = null; // { msg, ts } 错误提示
+  let showShortcuts = false; // 快捷键速查弹窗
+  let clipboardWatch = false; // 剪贴板监听开关
+  let lastClipboardText = ""; // 上次剪贴板内容，用于变化检测
+  let clipboardTimer = null; // 剪贴板轮询计时器
 
   // --- 核心状态 ---
   let input = "";
@@ -44,6 +56,15 @@
   let status = "准备就绪";
   let copied = false;
   let copiedEngines = {}; // { [engine]: boolean } 跟踪每个引擎的复制状态
+
+  // 错误提示：4 秒后自动消失
+  function showError(msg) {
+    const text = String(msg || "翻译失败").replace(/^Error:\s*/, "");
+    errorToast = { msg: text, ts: Date.now() };
+    setTimeout(() => {
+      if (errorToast && errorToast.msg === text) errorToast = null;
+    }, 4000);
+  }
 
   // --- 界面控制 ---
   let showConfig = false;
@@ -104,11 +125,17 @@
     window.speechSynthesis.speak(u);
   }
 
-  // 历史记录变更时同步到后端（持久化）
-  $: {
-    if (history !== undefined) {
+  // 历史记录变更时防抖同步到后端（避免高频自动翻译时频繁写盘）
+  function scheduleHistorySave() {
+    if (history === undefined) return;
+    clearTimeout(historySaveTimer);
+    historySaveTimer = setTimeout(() => {
       SaveHistory(history).catch((e) => console.error("保存历史失败:", e));
-    }
+    }, 500);
+  }
+
+  $: if (history !== undefined) {
+    scheduleHistorySave();
   }
 
   // 从 Store 响应式获取配置
@@ -125,6 +152,99 @@
   $: compareEngines = Array.isArray(currentConfig?.compareEngines) && currentConfig.compareEngines.length
     ? currentConfig.compareEngines
     : ["tencent", "aliyun"];
+
+  // 检测当前激活引擎是否缺少凭据，用于在 UI 上提示用户
+  $: apiKeyMissing = (() => {
+    const cfg = currentConfig;
+    if (!cfg) return false;
+    if (activeEngine === "aliyun") {
+      return !cfg.aliyun?.secretId || !cfg.aliyun?.secretKey;
+    }
+    return !cfg.tencent?.secretKey;
+  })();
+
+  // 剪贴板监听开关同步自配置
+  $: clipboardWatch = !!(currentConfig?.clipboardWatch ?? false);
+
+  // 响应式启停剪贴板轮询
+  $: if (clipboardWatch !== undefined) {
+    updateClipboardWatcher(clipboardWatch);
+  }
+
+  function updateClipboardWatcher(on) {
+    if (on && !clipboardTimer) {
+      startClipboardWatch();
+    } else if (!on && clipboardTimer) {
+      stopClipboardWatch();
+    }
+  }
+
+  function startClipboardWatch() {
+    // 先记录当前剪贴板内容作为基线，避免开启即触发
+    ClipboardGetText()
+      .then((text) => {
+        lastClipboardText = text || "";
+      })
+      .catch(() => {});
+    clipboardTimer = setInterval(async () => {
+      try {
+        const text = await ClipboardGetText();
+        if (
+          text &&
+          text !== lastClipboardText &&
+          text.trim().length > 0 &&
+          text.length < 5000 && // 防止超大文本触发
+          !isProcessing
+        ) {
+          lastClipboardText = text;
+          suppressAuto = true;
+          input = text;
+          // 立即触发翻译
+          setTimeout(() => {
+            suppressAuto = false;
+            translate();
+          }, 50);
+        }
+      } catch (e) {
+        // 读取失败静默忽略，下次重试
+      }
+    }, 1500);
+  }
+
+  function stopClipboardWatch() {
+    if (clipboardTimer) {
+      clearInterval(clipboardTimer);
+      clipboardTimer = null;
+    }
+  }
+
+  // 切换剪贴板监听
+  function toggleClipboardWatch() {
+    updateAndSaveConfig("clipboardWatch", !clipboardWatch).catch((e) =>
+      showError("切换剪贴板监听失败")
+    );
+  }
+
+  // 结果再翻译：把当前输出作为新输入，交换源/目标语言后重新翻译
+  function retranslateOutput() {
+    if (!output || isProcessing) return;
+    // 自动识别时，用上次检测结果作为新源语言
+    let newSource = source === "auto" ? autoDetectLang.replace(/^自动\s*\(|\)$/g, "") : source;
+    if (!langs[newSource]) newSource = "auto";
+    suppressAuto = true;
+    const newInput = output;
+    output = "";
+    input = newInput;
+    source = newSource;
+    target = newSource === "zh" ? "en" : "zh";
+    // 若原目标是 zh，再翻译目标为 en，反之亦然；保持简单互换
+    if (source === "zh") target = "en";
+    else if (source === "en") target = "zh";
+    setTimeout(() => {
+      suppressAuto = false;
+      translate();
+    }, 50);
+  }
 
   // 切换主题的函数
   function toggleTheme() {
@@ -145,6 +265,12 @@
     } catch (e) {
       console.error("加载历史失败:", e);
     }
+  });
+
+  onDestroy(() => {
+    stopClipboardWatch();
+    clearTimeout(historySaveTimer);
+    clearTimeout(autoTimer);
   });
 
   // 自动翻译防抖：输入变化后延迟触发（可开关）
@@ -190,7 +316,8 @@
       // 添加到历史记录
       addHistory(input, output, source, target);
     } catch (e) {
-      status = e || "翻译失败";
+      status = "翻译失败";
+      showError(e);
       console.error(e);
     }
     isProcessing = false;
@@ -304,9 +431,17 @@
       return;
     }
 
-    // 关闭历史面板：Esc
-    if (e.key === "Escape" && showHistory) {
-      showHistory = false;
+    // 快捷键速查：? 键（Shift+/，无需 Ctrl/Cmd）
+    if (e.shiftKey && e.key === "?") {
+      e.preventDefault();
+      showShortcuts = !showShortcuts;
+      return;
+    }
+
+    // 关闭面板：Esc
+    if (e.key === "Escape") {
+      if (showHistory) showHistory = false;
+      if (showShortcuts) showShortcuts = false;
     }
   }
 
@@ -334,9 +469,13 @@
 
   // 抽离出更新配置的逻辑
   async function refreshConfig() {
-    const cfg = await GetConfig();
-    if (cfg?.defaultEngine) {
-      activeEngine = cfg.defaultEngine;
+    try {
+      const cfg = await GetConfig();
+      if (cfg?.defaultEngine) {
+        activeEngine = cfg.defaultEngine;
+      }
+    } catch (e) {
+      console.error("读取配置失败:", e);
     }
   }
 </script>
@@ -344,6 +483,15 @@
 <svelte:window on:keydown={handleGlobalKeydown} />
 
 <div class="app-shell" class:light-mode={!isDark}>
+  {#if errorToast}
+    <div class="error-toast" transition:fade={{ duration: 200 }}>
+      <AlertCircle size={16} />
+      <span class="error-toast-msg">{errorToast.msg}</span>
+      <button class="error-toast-close" on:click={() => (errorToast = null)}>
+        <X size={14} />
+      </button>
+    </div>
+  {/if}
   <aside class="sidebar" class:collapsed={sidebarCollapsed}>
     <div class="sidebar-header">
       {#if !sidebarCollapsed}
@@ -420,6 +568,17 @@
   </aside>
 
   <main class="main-content">
+    {#if apiKeyMissing}
+      <div class="api-key-banner" transition:fade={{ duration: 200 }}>
+        <AlertCircle size={14} />
+        <span>
+          当前引擎（{activeEngine === "aliyun" ? "阿里云" : "混元"}）未配置凭据，
+        </span>
+        <button class="banner-link" on:click={() => (showConfig = true)}>
+          前往设置
+        </button>
+      </div>
+    {/if}
     <header class="workspace-header">
       <div class="lang-bar">
         <div class="select-wrapper">
@@ -463,6 +622,15 @@
         >
           <Zap size={13} />
           自动
+        </button>
+        <button
+          class="mode-btn"
+          class:active={clipboardWatch}
+          on:click={toggleClipboardWatch}
+          title={clipboardWatch ? "关闭剪贴板监听" : "开启剪贴板监听"}
+        >
+          <Clipboard size={13} />
+          剪贴板
         </button>
         <button
           class="mode-btn"
@@ -615,6 +783,14 @@
               朗读
             </button>
             <button
+              class="action-btn"
+              on:click={retranslateOutput}
+              title="将翻译结果作为新输入，交换语言后重新翻译"
+            >
+              <CornerDownLeft size={14} />
+              再翻译
+            </button>
+            <button
               class="action-btn copy"
               on:click={handleCopy}
               class:success={copied}
@@ -639,7 +815,7 @@
       </div>
       <div class="status-item shortcut-hint">
         <Keyboard size={12} />
-        <span>Ctrl+Enter 发送 · Ctrl+L 聚焦 · Ctrl+K 清空 · Ctrl+J 交换 · Ctrl+Shift+H 历史</span>
+        <span>Ctrl+Enter 发送 · Ctrl+J 交换 · Ctrl+Shift+H 历史 · 按 ? 查看全部快捷键</span>
       </div>
     </footer>
   </main>
@@ -653,9 +829,79 @@
   />
 
   <Config bind:show={showConfig} {isDark} />
+
+  <Shortcuts bind:show={showShortcuts} />
 </div>
 
 <style>
+  /* 错误 Toast */
+  .error-toast {
+    position: fixed;
+    top: 20px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 2000;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    background: #ef4444;
+    color: #fff;
+    padding: 10px 16px;
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(239, 68, 68, 0.4);
+    font-size: 13px;
+    font-weight: 500;
+    max-width: 80vw;
+  }
+  .error-toast-msg {
+    flex: 1;
+    word-break: break-word;
+  }
+  .error-toast-close {
+    background: transparent;
+    border: none;
+    color: #fff;
+    cursor: pointer;
+    padding: 2px;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    opacity: 0.85;
+  }
+  .error-toast-close:hover {
+    opacity: 1;
+    background: rgba(255, 255, 255, 0.15);
+  }
+
+  /* API Key 缺失提示横幅 */
+  .api-key-banner {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 16px;
+    background: rgba(251, 191, 36, 0.12);
+    border-bottom: 1px solid rgba(251, 191, 36, 0.3);
+    color: #f59e0b;
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .light-mode .api-key-banner {
+    background: rgba(251, 191, 36, 0.1);
+  }
+  .banner-link {
+    background: transparent;
+    border: none;
+    color: #f59e0b;
+    text-decoration: underline;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 0;
+  }
+  .banner-link:hover {
+    color: #d97706;
+  }
+
   .right-tools {
     display: flex;
     align-items: center;

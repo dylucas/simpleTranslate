@@ -9,6 +9,7 @@ import (
 	"simpleTranslate/translate"
 	"strings"
 	"sync"
+	"time"
 )
 
 type App struct {
@@ -53,48 +54,41 @@ type HistoryEntry struct {
 	Time   string `json:"time"`
 }
 
-// 给前端调用的统一入口
+// TranslateText 给前端调用的统一入口
 func (a *App) TranslateText(text string, source string, target string, engine string) (*TranslateResult, error) {
 	src := source
 
-	// 自动识别语种
+	// 自动识别语种（与 TranslateMulti 保持一致：best-effort 跨引擎兜底）
 	if src == "" || src == "auto" {
-		detected := ""
-		var err error
-		if engine == "aliyun" {
-			detected, err = translate.GetDetectLanguage(text)
+		// 优先使用当前引擎；失败时按引擎列表兜底
+		engines := []string{engine}
+		if engine != "tencent" && engine != "aliyun" {
+			engines = []string{"tencent", "aliyun"}
 		} else {
-			detected, err = translate.DetectLanguage(text)
-
+			// 把另一个引擎追加为兜底
+			other := "aliyun"
+			if engine == "aliyun" {
+				other = "tencent"
+			}
+			engines = append(engines, other)
 		}
-		if err == nil {
-			src = detected
-		} else {
+		detected, err := detectLanguageBestEffort(text, engines)
+		if err != nil {
 			return nil, err
 		}
+		src = detected
 	}
 
 	// 目标语言兜底
-	if src == target {
-		switch src {
-		case "zh":
-			target = "en"
-		case "en":
-			target = "zh"
-		default:
-			target = "en"
-		}
-	}
+	tgt := fallbackTarget(src, target)
 
 	result := ""
 	var err error
 	if engine == "aliyun" {
-		result, err = translate.TranslateGeneral(text, src, target)
+		result, err = translate.TranslateGeneral(text, src, tgt)
 	} else {
-		result, err = translate.Translate(text, src, target)
+		result, err = translate.Translate(text, src, tgt)
 	}
-
-	// result, err := translate.Translate(text, src, target)
 	if err != nil {
 		return nil, err
 	}
@@ -102,9 +96,24 @@ func (a *App) TranslateText(text string, source string, target string, engine st
 	return &TranslateResult{
 		Source:  source,
 		AutoSrc: src,
-		Target:  target,
+		Target:  tgt,
 		Text:    result,
 	}, nil
+}
+
+// fallbackTarget 当源语言与目标语言相同时，按习惯切换目标语言
+func fallbackTarget(src, target string) string {
+	if src != target {
+		return target
+	}
+	switch src {
+	case "zh":
+		return "en"
+	case "en":
+		return "zh"
+	default:
+		return "en"
+	}
 }
 
 func normalizeEngines(engines []string) []string {
@@ -149,7 +158,8 @@ func detectLanguageBestEffort(text string, engines []string) (string, error) {
 	return "", fmt.Errorf("语言识别失败")
 }
 
-// 多引擎并发翻译：同一句话同时走多个引擎，返回并排结果
+// TranslateMulti 多引擎并发翻译：同一句话同时走多个引擎，返回并排结果。
+// 单引擎超时 30s，超时的引擎返回 "翻译超时" 错误而非阻塞整体。
 func (a *App) TranslateMulti(text string, source string, target string, engines []string) (*MultiTranslateResult, error) {
 	engines = normalizeEngines(engines)
 	src := source
@@ -163,18 +173,7 @@ func (a *App) TranslateMulti(text string, source string, target string, engines 
 		src = detected
 	}
 
-	// 目标语言兜底
-	tgt := target
-	if src == tgt {
-		switch src {
-		case "zh":
-			tgt = "en"
-		case "en":
-			tgt = "zh"
-		default:
-			tgt = "en"
-		}
-	}
+	tgt := fallbackTarget(src, target)
 
 	results := make(map[string]EngineTranslateResult, len(engines))
 	var mu sync.Mutex
@@ -185,20 +184,35 @@ func (a *App) TranslateMulti(text string, source string, target string, engines 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			var (
-				out string
-				err error
-			)
-			if engine == "aliyun" {
-				out, err = translate.TranslateGeneral(text, src, tgt)
-			} else {
-				out, err = translate.Translate(text, src, tgt)
+			type outcome struct {
+				text string
+				err  error
+			}
+			done := make(chan outcome, 1)
+			go func() {
+				var (
+					out string
+					err error
+				)
+				if engine == "aliyun" {
+					out, err = translate.TranslateGeneral(text, src, tgt)
+				} else {
+					out, err = translate.Translate(text, src, tgt)
+				}
+				done <- outcome{out, err}
+			}()
+
+			r := EngineTranslateResult{Engine: engine}
+			select {
+			case o := <-done:
+				r.Text = o.text
+				if o.err != nil {
+					r.Error = o.err.Error()
+				}
+			case <-time.After(30 * time.Second):
+				r.Error = "翻译超时"
 			}
 
-			r := EngineTranslateResult{Engine: engine, Text: out}
-			if err != nil {
-				r.Error = err.Error()
-			}
 			mu.Lock()
 			results[engine] = r
 			mu.Unlock()
@@ -239,10 +253,13 @@ func (a *App) TestConnection(engine string) error {
 
 // getHistoryPath 返回历史记录文件路径
 func (a *App) getHistoryPath() string {
-	home, _ := os.UserHomeDir()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
 	dir := filepath.Join(home, ".simple_translate")
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		os.MkdirAll(dir, 0755)
+		_ = os.MkdirAll(dir, 0755)
 	}
 	return filepath.Join(dir, "history.json")
 }

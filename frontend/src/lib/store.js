@@ -9,6 +9,8 @@ export const configStore = writable({
     // Multi-engine compare
     compareMode: false,
     compareEngines: ['tencent', 'aliyun'],
+    // 剪贴板监听
+    clipboardWatch: false,
     tencent: { secretId: "", secretKey: "", region: "" },
     aliyun: { secretId: "", secretKey: "", region: "cn-hangzhou" }
 });
@@ -21,6 +23,7 @@ export const initConfig = async () => {
             // 如果后端返回的配置里没有 isDark，给个默认值
             if (cfg.isDark === undefined) cfg.isDark = true;
             if (cfg.compareMode === undefined) cfg.compareMode = false;
+            if (cfg.clipboardWatch === undefined) cfg.clipboardWatch = false;
             if (!Array.isArray(cfg.compareEngines) || cfg.compareEngines.length === 0) cfg.compareEngines = ['tencent', 'aliyun'];
             // @ts-ignore
             configStore.set(cfg);
@@ -31,11 +34,18 @@ export const initConfig = async () => {
 };
 
 // 快捷保存函数：用于只修改单个属性（如主题）时同步到后端
+// 返回 Promise，便于调用方感知保存是否成功
 export const updateAndSaveConfig = async (partialKey, value) => {
+    let next;
     configStore.update(curr => {
-        const next = { ...curr, [partialKey]: value };
-        // @ts-ignore
-        SaveConfig(next); // 异步调用后端保存
+        next = { ...curr, [partialKey]: value };
         return next;
     });
+    try {
+        // @ts-ignore
+        await SaveConfig(next);
+    } catch (e) {
+        console.error("保存配置失败:", partialKey, e);
+        throw e; // 向上抛出，调用方可决定如何提示
+    }
 };

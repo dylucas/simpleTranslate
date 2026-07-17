@@ -16,7 +16,7 @@ func (a *App) getConfigPath() string {
 }
 
 // GetConfig 提供给前端调用：读取配置
-func (a *App) GetConfig() CloudConfig {
+func (a *App) GetConfig() (CloudConfig, error) {
 	return config.GetConfig(a.getConfigPath())
 }
 
