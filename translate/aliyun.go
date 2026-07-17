@@ -3,6 +3,7 @@ package translate
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -105,15 +106,37 @@ type APIResponse struct {
 
 // ResponseBody 阿里云翻译接口响应体
 type ResponseBody struct {
-	Code      int            `json:"Code"`
+	Code      flexInt        `json:"Code"`
 	Data      TranslatedData `json:"Data"`
 	RequestID string         `json:"RequestId"`
 }
 
 // TranslatedData 翻译结果数据
 type TranslatedData struct {
-	Translated string `json:"Translated"`
-	WordCount  int    `json:"WordCount"`
+	Translated string  `json:"Translated"`
+	WordCount  flexInt `json:"WordCount"`
+}
+
+// flexInt 兼容阿里云 API 中 Code/WordCount 等字段可能以字符串或数字形式返回的情况。
+// 例如 "200"（字符串）与 200（数字）都能正确解析为整数。
+type flexInt int
+
+// UnmarshalJSON 同时接受 JSON 数字和带引号的字符串数字
+func (f *flexInt) UnmarshalJSON(data []byte) error {
+	s := strings.TrimSpace(string(data))
+	if len(s) == 0 {
+		return nil
+	}
+	// 去除可能的引号
+	if s[0] == '"' && s[len(s)-1] == '"' {
+		s = s[1 : len(s)-1]
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return fmt.Errorf("flexInt: 无法解析 %q: %w", string(data), err)
+	}
+	*f = flexInt(n)
+	return nil
 }
 
 // GetDetectLanguage 调用阿里云接口识别语种，返回前端约定的语言代码
