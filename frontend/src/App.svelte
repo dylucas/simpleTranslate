@@ -598,7 +598,6 @@
         <div class="select-wrapper">
           <select
             bind:value={source}
-            style={isDark ? "background: #1e1e1e;" : ""}
           >
             <option value="auto">{autoDetectLang}</option>
             {#each Object.entries(langs) as [code, name]}
@@ -618,7 +617,6 @@
         <div class="select-wrapper">
           <select
             bind:value={target}
-            style={isDark ? "background: #1e1e1e;" : ""}
           >
             {#each Object.entries(langs) as [code, name]}
               <option value={code}>{name}</option>
@@ -858,10 +856,10 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    background: #ef4444;
+    background: var(--danger);
     color: #fff;
     padding: 10px 16px;
-    border-radius: 10px;
+    border-radius: var(--radius-md);
     box-shadow: 0 8px 24px rgba(239, 68, 68, 0.4);
     font-size: 13px;
     font-weight: 500;
@@ -895,7 +893,7 @@
     padding: 8px 16px;
     background: rgba(251, 191, 36, 0.12);
     border-bottom: 1px solid rgba(251, 191, 36, 0.3);
-    color: #f59e0b;
+    color: var(--warning);
     font-size: 12px;
     font-weight: 500;
   }
@@ -905,7 +903,7 @@
   .banner-link {
     background: transparent;
     border: none;
-    color: #f59e0b;
+    color: var(--warning);
     text-decoration: underline;
     cursor: pointer;
     font-size: 12px;
@@ -1110,33 +1108,52 @@
     }
   }
   :root {
-    --bg-base: #121212;
-    --bg-sidebar: #181818;
-    --bg-surface: #1e1e1e;
-    --bg-hover: #2a2a2a;
-    --border: #333;
+    --bg-base: #0f1115;
+    --bg-sidebar: #14171d;
+    --bg-surface: #181c23;
+    --bg-elevated: #1d2129;
+    --bg-input: #0e1014;
+    --bg-hover: #242935;
+    --border: #2a3040;
+    --border-soft: #21262f;
     --primary: #3b82f6;
     --primary-hover: #2563eb;
-    --text-main: #e5e5e5;
-    --text-sec: #a3a3a3;
-    --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3),
-      0 2px 4px -1px rgba(0, 0, 0, 0.16);
+    --accent-glow: rgba(59, 130, 246, 0.22);
+    --text-main: #e8ebf0;
+    --text-sec: #98a2b3;
+    --success: #10b981;
+    --warning: #f59e0b;
+    --danger: #ef4444;
+    --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.4),
+      0 2px 4px -1px rgba(0, 0, 0, 0.2);
+    --shadow-lg: 0 20px 45px -12px rgba(0, 0, 0, 0.55);
+    --radius-sm: 6px;
+    --radius-md: 10px;
+    --radius-lg: 16px;
     --sidebar-w: 240px;
     --sidebar-collapsed-w: 72px;
   }
 
   .light-mode {
-    --bg-base: #ffffff;
-    --bg-sidebar: #f8f9fa;
+    --bg-base: #f6f8fb;
+    --bg-sidebar: #ffffff;
     --bg-surface: #ffffff;
-    --bg-hover: #e9ecef;
-    --border: #e5e7eb;
+    --bg-elevated: #ffffff;
+    --bg-input: #f4f6f9;
+    --bg-hover: #eef1f6;
+    --border: #e3e8f0;
+    --border-soft: #eef1f6;
     --primary: #2563eb;
     --primary-hover: #1d4ed8;
-    --text-main: #1f2937;
+    --accent-glow: rgba(37, 99, 235, 0.12);
+    --text-main: #1a1f2e;
     --text-sec: #6b7280;
-    --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1),
-      0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    --success: #059669;
+    --warning: #d97706;
+    --danger: #dc2626;
+    --shadow: 0 4px 6px -1px rgba(15, 23, 42, 0.08),
+      0 2px 4px -1px rgba(15, 23, 42, 0.04);
+    --shadow-lg: 0 20px 45px -12px rgba(15, 23, 42, 0.18);
   }
 
   /* 全局重置 */
@@ -1150,11 +1167,12 @@
     background: var(--bg-base);
     color: var(--text-main);
     font-family:
-      "Inter",
       -apple-system,
       BlinkMacSystemFont,
       "Segoe UI",
       Roboto,
+      "Helvetica Neue",
+      "Nunito",
       sans-serif;
     overflow: hidden;
   }
@@ -1394,21 +1412,46 @@
 
   .select-wrapper {
     position: relative;
+    display: inline-flex;
+    align-items: center;
   }
   .select-wrapper select {
     appearance: none;
+    -webkit-appearance: none;
     background: transparent;
     border: none;
     color: var(--text-main);
     font-size: 14px;
     font-weight: 600;
     cursor: pointer;
-    padding: 8px 12px;
-    border-radius: 6px;
+    padding: 8px 26px 8px 12px;
+    border-radius: var(--radius-sm);
     outline: none;
+    transition: background 0.2s, color 0.2s;
   }
   .select-wrapper select:hover {
     background: var(--bg-hover);
+  }
+  /* 自定义下拉箭头（替代被 appearance:none 移除的原生指示） */
+  .select-wrapper::after {
+    content: "";
+    position: absolute;
+    right: 10px;
+    width: 7px;
+    height: 7px;
+    border-right: 2px solid var(--text-sec);
+    border-bottom: 2px solid var(--text-sec);
+    transform: rotate(45deg) translateY(-2px);
+    pointer-events: none;
+    transition: border-color 0.2s;
+  }
+  .select-wrapper:hover::after {
+    border-color: var(--primary);
+  }
+  /* 主题化原生选项列表 */
+  .select-wrapper select option {
+    background: var(--bg-elevated);
+    color: var(--text-main);
   }
 
   .swap-btn {
@@ -1441,8 +1484,9 @@
       transform 0.1s,
       box-shadow 0.2s;
   }
-  .translate-btn:hover {
-    box-shadow: 0 6px 14px rgba(59, 130, 246, 0.4);
+  .translate-btn:hover:not(:disabled) {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 16px rgba(59, 130, 246, 0.45);
   }
   .translate-btn:active {
     transform: scale(0.96);
@@ -1576,14 +1620,15 @@
     width: 6px;
     height: 6px;
     border-radius: 50%;
-    background: #10b981; /* Ready Green */
+    background: var(--success); /* Ready Green */
+    box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.5);
   }
   .status-dot.processing {
-    background: #f59e0b;
+    background: var(--warning);
     animation: pulse 1s infinite;
   }
   .status-dot.error {
-    background: #ef4444;
+    background: var(--danger);
   }
 
   @keyframes pulse {

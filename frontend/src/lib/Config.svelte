@@ -237,45 +237,29 @@
 {/if}
 
 <style>
-  /* 基础主题变量 (深色模式) */
+  /* 主题变量继承自全局 .app-shell / .light-mode，此处仅定义遮罩层 */
   .overlay {
-    --bg-modal: #111216;
-    --bg-surface: #1a1c23;
-    --bg-input: #0c0d10;
-    --border-color: #2a2d38;
-    --text-main: #e2e8f0;
-    --text-dim: #94a3b8;
-    --accent: #3b82f6;
-    --accent-glow: rgba(59, 130, 246, 0.2);
-
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.7);
+    background: rgba(0, 0, 0, 0.55);
     backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
     display: flex;
     align-items: center;
     justify-content: center;
     z-index: 1000;
   }
 
-  /* 浅色模式覆盖 */
-  .light-mode {
-    --bg-modal: #ffffff;
-    --bg-surface: #f8fafc;
-    --bg-input: #ffffff;
-    --border-color: #e2e8f0;
-    --text-main: #1e293b;
-    --text-dim: #64748b;
-    --accent: #2563eb;
-    --accent-glow: rgba(37, 99, 235, 0.1);
-    background: rgba(255, 255, 255, 0.4);
+  /* 浅色模式下使用更轻的遮罩 */
+  .overlay.light-mode {
+    background: rgba(15, 23, 42, 0.35);
   }
 
   .modal {
     width: 580px;
     max-width: 95vw;
-    background: var(--bg-modal);
-    border: 1px solid var(--border-color);
+    background: var(--bg-elevated);
+    border: 1px solid var(--border);
     border-radius: 24px;
     box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
     display: flex;
@@ -289,7 +273,7 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    border-bottom: 1px solid var(--border-color);
+    border-bottom: 1px solid var(--border);
   }
 
   .header-main {
@@ -299,7 +283,7 @@
   }
 
   .brand-icon {
-    background: var(--accent);
+    background: var(--primary);
     color: white;
     width: 42px;
     height: 42px;
@@ -319,13 +303,13 @@
 
   .header-info span {
     font-size: 12px;
-    color: var(--text-dim);
+    color: var(--text-sec);
   }
 
   .close-btn {
     background: transparent;
     border: none;
-    color: var(--text-dim);
+    color: var(--text-sec);
     cursor: pointer;
     padding: 8px;
     border-radius: 50%;
@@ -350,7 +334,7 @@
   .group-title {
     font-size: 11px;
     font-weight: 700;
-    color: var(--accent);
+    color: var(--primary);
     text-transform: uppercase;
     letter-spacing: 1px;
     margin-bottom: 12px;
@@ -362,7 +346,7 @@
   .settings-card,
   .input-card {
     background: var(--bg-surface);
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--border);
     border-radius: 16px;
     padding: 20px;
   }
@@ -387,7 +371,7 @@
 
   .sub-label {
     font-size: 12px;
-    color: var(--text-dim);
+    color: var(--text-sec);
   }
 
   /* Forms */
@@ -412,7 +396,7 @@
   .input-field label {
     font-size: 12px;
     font-weight: 500;
-    color: var(--text-dim);
+    color: var(--text-sec);
     margin-left: 2px;
   }
 
@@ -425,7 +409,7 @@
   .input-wrapper :global(svg) {
     position: absolute;
     left: 12px;
-    color: var(--text-dim);
+    color: var(--text-sec);
     pointer-events: none;
   }
 
@@ -433,7 +417,7 @@
   select {
     width: 100%;
     background: var(--bg-input);
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--border);
     border-radius: 10px;
     padding: 10px 12px 10px 36px;
     color: var(--text-main);
@@ -450,7 +434,7 @@
 
   input:focus,
   select:focus {
-    border-color: var(--accent);
+    border-color: var(--primary);
     box-shadow: 0 0 0 3px var(--accent-glow);
   }
 
@@ -462,7 +446,7 @@
   }
   .test-btn {
     background: var(--bg-input);
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--border);
     color: var(--text-main);
     padding: 8px 14px;
     border-radius: 10px;
@@ -475,8 +459,8 @@
     transition: all 0.2s;
   }
   .test-btn:hover:not(:disabled) {
-    border-color: var(--accent);
-    color: var(--accent);
+    border-color: var(--primary);
+    color: var(--primary);
   }
   .test-btn:disabled {
     opacity: 0.5;
@@ -506,12 +490,12 @@
     display: flex;
     justify-content: space-between;
     align-items: center;
-    background: var(--bg-modal);
+    background: var(--bg-elevated);
   }
 
   .footer-status {
     font-size: 13px;
-    color: var(--accent);
+    color: var(--primary);
     font-weight: 500;
   }
 
@@ -521,7 +505,7 @@
   }
 
   .primary-btn {
-    background: var(--accent);
+    background: var(--primary);
     color: white;
     border: none;
     padding: 10px 20px;
@@ -547,7 +531,7 @@
 
   .secondary-btn {
     background: transparent;
-    border: 1px solid var(--border-color);
+    border: 1px solid var(--border);
     color: var(--text-main);
     padding: 10px 20px;
     border-radius: 10px;
@@ -577,7 +561,7 @@
     background: transparent;
   }
   .modal-content::-webkit-scrollbar-thumb {
-    background: var(--border-color);
+    background: var(--border);
     border-radius: 10px;
   }
 </style>
