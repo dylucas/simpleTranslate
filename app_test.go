@@ -202,13 +202,19 @@ func TestTranslateText_MissingCreds(t *testing.T) {
 	config.InvalidateCache()
 
 	app := NewApp()
-	_, err := app.TranslateText("hello", "en", "zh", "aliyun")
-	if err == nil {
-		t.Error("未配置阿里云凭据期望返回错误")
+	res := app.TranslateText("hello", "en", "zh", "aliyun")
+	if res.ErrorCode == "" {
+		t.Error("未配置阿里云凭据期望返回结构化错误码")
 	}
-	_, err = app.TranslateText("hello", "en", "zh", "tencent")
-	if err == nil {
-		t.Error("未配置混元凭据期望返回错误")
+	if res.ErrorCode != "credentials" {
+		t.Errorf("期望错误码 credentials，得到 %q", res.ErrorCode)
+	}
+	res = app.TranslateText("hello", "en", "zh", "tencent")
+	if res.ErrorCode == "" {
+		t.Error("未配置混元凭据期望返回结构化错误码")
+	}
+	if res.ErrorCode != "credentials" {
+		t.Errorf("期望错误码 credentials，得到 %q", res.ErrorCode)
 	}
 }
 

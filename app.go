@@ -10,6 +10,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 type App struct {
@@ -36,12 +38,17 @@ type TranslateResult struct {
 	AutoSrc string `json:"autoSrc"`
 	Target  string `json:"target"`
 	Text    string `json:"text"`
+	// 结构化错误信息：成功时为空，失败时填充。
+	// 不再通过 Go error 返回，确保前端总能通过 result 拿到结构化错误用于差异化提示与重试策略。
+	Error     string `json:"error,omitempty"`        // 用户可读错误字符串
+	ErrorCode string `json:"errorCode,omitempty"`    // 错误类别：credentials/network/timeout/rate_limit/invalid_input/service_unavailable/unknown
 }
 
 type EngineTranslateResult struct {
 	Engine string `json:"engine"`
 	Text   string `json:"text"`
-	Error  string `json:"error,omitempty"`
+	Error  string `json:"error,omitempty"`        // 兼容旧前端：用户可读错误字符串
+	ErrorCode string `json:"errorCode,omitempty"` // 结构化错误类别（credentials/network/timeout/...），前端按类别差异化提示与重试
 }
 
 type MultiTranslateResult struct {
@@ -61,8 +68,11 @@ type HistoryEntry struct {
 	Time   string `json:"time"`
 }
 
-// TranslateText 给前端调用的统一入口
-func (a *App) TranslateText(text string, source string, target string, engine string) (*TranslateResult, error) {
+// TranslateText 给前端调用的统一入口。
+// 不再返回 Go error：所有错误通过 TranslateResult.Error/ErrorCode 字段返回，
+// 前端总能拿到结构化错误用于差异化提示与重试策略。
+func (a *App) TranslateText(text string, source string, target string, engine string) TranslateResult {
+	empty := TranslateResult{Source: source, Target: target}
 	src := source
 
 	// 自动识别语种（与 TranslateMulti 保持一致：best-effort 跨引擎兜底）
@@ -81,7 +91,12 @@ func (a *App) TranslateText(text string, source string, target string, engine st
 		}
 		detected, err := a.detectLanguageBestEffort(text, engines)
 		if err != nil {
-			return nil, err
+			te := classifyError(engine, err)
+			te.Message = "语言识别失败：" + te.Message
+			empty.AutoSrc = ""
+			empty.Error = te.Message
+			empty.ErrorCode = te.Code
+			return empty
 		}
 		src = detected
 	}
@@ -92,12 +107,12 @@ func (a *App) TranslateText(text string, source string, target string, engine st
 	// 命中缓存直接返回，避免重复调用 API
 	ck := cacheKey(engine, src, tgt, text)
 	if v, ok := a.translateCache.get(ck); ok {
-		return &TranslateResult{
+		return TranslateResult{
 			Source:  source,
 			AutoSrc: src,
 			Target:  tgt,
 			Text:    v,
-		}, nil
+		}
 	}
 
 	result := ""
@@ -108,18 +123,23 @@ func (a *App) TranslateText(text string, source string, target string, engine st
 		result, err = translate.Translate(text, src, tgt)
 	}
 	if err != nil {
-		return nil, err
+		te := wrapTranslateError(engine, err)
+		empty.AutoSrc = src
+		empty.Target = tgt
+		empty.Error = te.Message
+		empty.ErrorCode = te.Code
+		return empty
 	}
 
 	// 写入缓存供下次命中
 	a.translateCache.set(ck, result)
 
-	return &TranslateResult{
+	return TranslateResult{
 		Source:  source,
 		AutoSrc: src,
 		Target:  tgt,
 		Text:    result,
-	}, nil
+	}
 }
 
 // fallbackTarget 当源语言与目标语言相同时，按习惯切换目标语言
@@ -197,15 +217,29 @@ const engineTimeout = 30 * time.Second
 
 // TranslateMulti 多引擎并发翻译：同一句话同时走多个引擎，返回并排结果。
 // 单引擎超时 engineTimeout，超时的引擎返回 "翻译超时" 错误而非阻塞整体。
-func (a *App) TranslateMulti(text string, source string, target string, engines []string) (*MultiTranslateResult, error) {
+// 不再返回 Go error：识别失败时为每个引擎填充结构化错误，确保前端总能拿到 errorCode。
+func (a *App) TranslateMulti(text string, source string, target string, engines []string) MultiTranslateResult {
 	engines = normalizeEngines(engines)
 	src := source
+	emptyRes := MultiTranslateResult{Source: source, Target: target, Results: map[string]EngineTranslateResult{}}
 
 	// 自动识别一次，供所有引擎共用
 	if src == "" || src == "auto" {
 		detected, err := a.detectLanguageBestEffort(text, engines)
 		if err != nil {
-			return nil, err
+			te := classifyError("", err)
+			te.Message = "语言识别失败：" + te.Message
+			// 为所有引擎填充同一错误，前端按 errorCode 显示
+			results := map[string]EngineTranslateResult{}
+			for _, e := range engines {
+				results[e] = EngineTranslateResult{
+					Engine:    e,
+					Error:     te.Message,
+					ErrorCode: te.Code,
+				}
+			}
+			emptyRes.Results = results
+			return emptyRes
 		}
 		src = detected
 	}
@@ -255,30 +289,39 @@ func (a *App) TranslateMulti(text string, source string, target string, engines 
 			case o := <-done:
 				r.Text = o.text
 				if o.err != nil {
-					r.Error = o.err.Error()
+					te := wrapTranslateError(engine, o.err)
+					r.Error = te.Message
+					r.ErrorCode = te.Code
 				} else {
 					// 仅缓存成功结果
 					a.translateCache.set(ck, o.text)
 				}
 			case <-time.After(engineTimeout):
 				// 底层 HTTP/SDK 已设 30s 超时，内层 goroutine 会自然退出，无需显式取消
-				r.Error = "翻译超时"
+				te := newTranslateError(ErrCodeTimeout, engine, "翻译超时，请稍后重试", nil)
+				r.Error = te.Message
+				r.ErrorCode = te.Code
 			}
 
 			mu.Lock()
 			results[engine] = r
 			mu.Unlock()
+
+			// 流式推送：单引擎完成后立即触发事件，前端可独立渲染与 loading
+			if a.ctx != nil {
+				runtime.EventsEmit(a.ctx, "translate:engine-result", r)
+			}
 		}()
 	}
 	wg.Wait()
 
-	res := &MultiTranslateResult{
+	res := MultiTranslateResult{
 		Source:  source,
 		AutoSrc: src,
 		Target:  tgt,
 		Results: results,
 	}
-	return res, nil
+	return res
 }
 
 // TestConnection 用一次最小请求验证指定引擎的凭据是否可用
