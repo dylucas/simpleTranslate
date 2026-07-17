@@ -10,7 +10,6 @@
     Moon,
     Copy,
     Check,
-    Keyboard,
     X,
     Settings,
     PanelLeftClose, // 使用更语义化的图标
@@ -23,7 +22,6 @@
   } from "lucide-svelte";
   import Config from "./lib/Config.svelte";
   import History from "./lib/History.svelte";
-  import Shortcuts from "./lib/Shortcuts.svelte";
   // @ts-ignore
   import { onMount, onDestroy } from "svelte";
   // @ts-ignore
@@ -40,7 +38,6 @@
   let autoTimer = null; // 防抖计时器
   let historySaveTimer = null; // 历史保存防抖计时器
   let errorToast = null; // { msg, ts } 错误提示
-  let showShortcuts = false; // 快捷键速查弹窗
   let clipboardWatch = false; // 剪贴板监听开关
   let lastClipboardText = ""; // 上次剪贴板内容，用于变化检测
   let clipboardTimer = null; // 剪贴板轮询计时器
@@ -441,17 +438,9 @@
       return;
     }
 
-    // 快捷键速查：? 键（Shift+/，无需 Ctrl/Cmd）
-    if (e.shiftKey && e.key === "?") {
-      e.preventDefault();
-      showShortcuts = !showShortcuts;
-      return;
-    }
-
     // 关闭面板：Esc
     if (e.key === "Escape") {
       if (showHistory) showHistory = false;
-      if (showShortcuts) showShortcuts = false;
     }
   }
 
@@ -826,8 +815,7 @@
         {status}
       </div>
       <div class="status-item shortcut-hint">
-        <Keyboard size={12} />
-        <span>Ctrl+Enter 发送 · Ctrl+J 交换 · Ctrl+Shift+H 历史 · 按 ? 查看全部快捷键</span>
+        <span>Ctrl+Enter 发送 · Ctrl+J 交换 · Ctrl+Shift+H 历史</span>
       </div>
     </footer>
   </main>
@@ -841,8 +829,6 @@
   />
 
   <Config bind:show={showConfig} {isDark} />
-
-  <Shortcuts bind:show={showShortcuts} />
 </div>
 
 <style>
