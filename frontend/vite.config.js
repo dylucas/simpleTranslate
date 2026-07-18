@@ -1,7 +1,18 @@
-import {defineConfig} from 'vite'
-import {svelte} from '@sveltejs/vite-plugin-svelte'
+import { defineConfig } from "vite";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
 
-// https://vitejs.dev/config/
 export default defineConfig({
-  plugins: [svelte()]
-})
+  plugins: [svelte()],
+  resolve: {
+    conditions: ["browser"],
+  },
+  build: {
+    target: "es2020",
+  },
+  test: {
+    environment: "jsdom",
+    setupFiles: ["./src/test/setup.ts"],
+    restoreMocks: true,
+    exclude: ["e2e/**", "node_modules/**", "dist/**"],
+  },
+});

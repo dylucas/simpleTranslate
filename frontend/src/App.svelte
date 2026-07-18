@@ -1,1181 +1,384 @@
-<script>
-// @ts-nocheck
-
-  import { TranslateText, TranslateMulti, GetConfig } from "../wailsjs/go/main/App";
-  import {
-    Languages,
-    ArrowLeftRight,
-    History as HistoryIcon,
-    Sun,
-    Moon,
-    Copy,
-    Check,
-    Keyboard,
-    X,
-    Settings,
-    PanelLeftClose, // 使用更语义化的图标
-    Volume2,
-    Square,
-  } from "lucide-svelte";
+<script lang="ts">
+  import { AlertCircle, Check, Copy, CornerDownLeft, Languages, Square, TextCursorInput, Volume2, X } from "@lucide/svelte";
+  import { onDestroy, onMount, tick } from "svelte";
+  import { desktopBridge } from "./lib/bridge";
+  import { createClipboardWatcher } from "./lib/clipboard";
+  import { createConfigController } from "./lib/configController";
+  import { langs, getSpeechLang } from "./lib/languages";
+  import { ARIA_SHORTCUTS, createShortcutHandler } from "./lib/shortcuts";
+  import { createSpeaker } from "./lib/speech";
+  import { createTranslateController, type TranslateController } from "./lib/translateController";
+  import type { EngineId, HistoryEntry } from "./lib/types";
+  import ComparePanel from "./lib/ComparePanel.svelte";
   import Config from "./lib/Config.svelte";
+  import ErrorToast from "./lib/ErrorToast.svelte";
   import History from "./lib/History.svelte";
-  // @ts-ignore
-  import { onMount } from "svelte";
-  // @ts-ignore
-  import { fade } from "svelte/transition";
-  import { configStore, initConfig, updateAndSaveConfig } from "./lib/store";
+  import CommandBar from "./lib/CommandBar.svelte";
+  import StatusBar from "./lib/StatusBar.svelte";
+  import UtilityRail from "./lib/UtilityRail.svelte";
 
-  // --- 状态控制增强 ---
-  let isProcessing = false; // 并发锁
-  let speakingText = null; // 当前正在朗读的文本
+  let input = $state("");
+  let source = $state("auto");
+  let target = $state("zh");
+  let showConfig = $state(false);
+  let showHistory = $state(false);
+  let history = $state<HistoryEntry[]>([]);
+  let suppressAuto = $state(false);
+  let copied = $state(false);
+  let copiedEngines = $state<Partial<Record<EngineId, boolean>>>({});
+  let speakingText = $state<string | null>(null);
+  let inputElement: HTMLTextAreaElement;
+  let historySaveTimer: ReturnType<typeof setTimeout> | null = null;
+  let lastPanelTrigger: HTMLElement | null = null;
+  let queuedErrors: string[] = [];
+  let controller: TranslateController;
 
-  // --- 核心状态 ---
-  let input = "";
-  let output = "";
-  let compareOutputs = {}; // { [engine]: { text, error } }
-  let compareMode = false;
-  let compareEngines = ["tencent", "aliyun"];
-  let source = "auto";
-  let target = "zh";
-  let status = "准备就绪";
-  let copied = false;
-  let copiedEngines = {}; // { [engine]: boolean } 跟踪每个引擎的复制状态
+  const configController = createConfigController(desktopBridge, (message) => {
+    if (controller) controller.showError(message);
+    else queuedErrors.push(message);
+  });
+  let config = $derived($configController.value);
 
-  // --- 界面控制 ---
-  let showConfig = false;
-  let showHistory = false;
-  let history = [];
-  let inputEl; // 用于聚焦输入框的引用
-  let autoDetectLang = "自动识别";
-
-  const langs = {
-    zh: "中文",
-    en: "英文",
-    jp: "日语",
-    kr: "韩语",
-    fr: "法语",
-    de: "德语",
-    ru: "俄语",
-    es: "西语",
-  };
-
-  const langMap = {
-    zh: "zh-CN",
-    en: "en-US",
-    jp: "ja-JP",
-    kr: "ko-KR",
-    fr: "fr-FR",
-    de: "de-DE",
-    ru: "ru-RU",
-    es: "es-ES",
-  };
-
-  function getSpeechLang(code) {
-    return langMap[code] || "en-US";
+  function scheduleHistorySave(): void {
+    if (historySaveTimer) clearTimeout(historySaveTimer);
+    historySaveTimer = setTimeout(() => {
+      void desktopBridge.saveHistory(history).catch(() => controller.showError("历史记录保存失败"));
+    }, 400);
   }
 
-  function handleSpeak(text, langCode) {
-    if (!text) return;
+  controller = createTranslateController({
+    bridge: desktopBridge,
+    getInput: () => input,
+    getSource: () => source,
+    getTarget: () => target,
+    getActiveEngine: () => config.defaultEngine,
+    getCompareMode: () => config.compareMode,
+    getCompareEngines: () => availableCompareEngines,
+    getHistory: () => history,
+    setHistory: (update) => {
+      history = update(history);
+      scheduleHistorySave();
+    },
+    setTarget: (next) => {
+      if (target === next) return;
+      target = next;
+      void configController.patch("targetLanguage", next);
+    },
+  });
+  const translationState = controller.state;
+  let translation = $derived($translationState);
 
-    if (speakingText === text) {
-      // 如果点击的是当前正在朗读的文本，则停止
-      window.speechSynthesis.cancel();
-      speakingText = null;
-      return;
+  function isConfigured(engine: EngineId): boolean {
+    return engine === "tencent"
+      ? Boolean(config.tencent.secretKey.trim())
+      : Boolean(config.aliyun.secretId.trim() && config.aliyun.secretKey.trim());
+  }
+
+  let availableCompareEngines = $derived(config.compareEngines.filter(isConfigured));
+  let missingCompareEngines = $derived(config.compareEngines.filter((engine) => !isConfigured(engine)));
+  let credentialsReady = $derived(config.compareMode
+    ? availableCompareEngines.length > 0
+    : isConfigured(config.defaultEngine));
+  let canTranslate = $derived(Boolean(input.trim()) && credentialsReady);
+  let unavailableReason = $derived(!input.trim()
+    ? "请输入文本"
+    : !credentialsReady
+      ? "请先配置翻译凭据"
+      : "");
+  let credentialMessage = $derived.by(() => {
+    if (!config.compareMode && !isConfigured(config.defaultEngine)) {
+      return `${config.defaultEngine === "tencent" ? "腾讯混元" : "阿里云"}尚未配置凭据`;
     }
-
-    // 停止之前的朗读
-    window.speechSynthesis.cancel();
-
-    const u = new SpeechSynthesisUtterance(text);
-    u.lang = getSpeechLang(langCode);
-    u.onend = () => {
-      speakingText = null;
-    };
-    u.onerror = () => {
-      speakingText = null;
-    };
-    
-    speakingText = text;
-    window.speechSynthesis.speak(u);
-  }
-
-  // 模拟持久化历史记录
-  $: {
-    if (history.length > 0) {
-      localStorage.setItem(
-        "translate_history",
-        JSON.stringify(history.slice(0, 50)),
-      );
+    if (config.compareMode && missingCompareEngines.length) {
+      const names = missingCompareEngines.map((engine) => engine === "tencent" ? "混元" : "阿里云").join("、");
+      return availableCompareEngines.length ? `${names}未配置，将仅使用可用引擎` : "所选对照引擎均未配置凭据";
     }
-  }
-
-  // 从 Store 响应式获取配置
-  let currentConfig;
-  configStore.subscribe((value) => {
-    currentConfig = value;
+    return "";
   });
 
-  // 这里的 activeEngine 和 isDark 直接引用 currentConfig
-  $: isDark = currentConfig?.isDark ?? true;
-  $: sidebarCollapsed = currentConfig?.sidebarCollapsed ?? false;
-  $: activeEngine = currentConfig?.defaultEngine || "tencent";
-  $: compareMode = !!(currentConfig?.compareMode ?? false);
-  $: compareEngines = Array.isArray(currentConfig?.compareEngines) && currentConfig.compareEngines.length
-    ? currentConfig.compareEngines
-    : ["tencent", "aliyun"];
+  const speaker = createSpeaker(getSpeechLang);
+  const clipboardWatcher = createClipboardWatcher({
+    getText: () => desktopBridge.getClipboardText(),
+    isBusy: () => translation.isProcessing,
+    onText: (text) => {
+      suppressAuto = true;
+      input = text;
+      setTimeout(() => {
+        suppressAuto = false;
+        requestTranslation();
+      }, 0);
+    },
+  });
 
-  // 切换主题的函数
-  function toggleTheme() {
-    updateAndSaveConfig("isDark", !currentConfig.isDark);
+  $effect(() => {
+    if (config.clipboardWatch) clipboardWatcher.start();
+    else clipboardWatcher.stop();
+  });
+
+  $effect(() => {
+    const value = input;
+    if (config.autoTranslate && !suppressAuto && credentialsReady) {
+      controller.handleAutoTranslate(value);
+    }
+  });
+
+  function openPanel(panel: "config" | "history"): void {
+    lastPanelTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    showConfig = panel === "config";
+    showHistory = panel === "history";
   }
 
-  // 切换侧边栏并保存状态
-  function toggleSidebar() {
-    updateAndSaveConfig("sidebarCollapsed", !sidebarCollapsed);
+  function closePanels(): void {
+    showConfig = false;
+    showHistory = false;
+    void tick().then(() => lastPanelTrigger?.focus());
+  }
+
+  function requestTranslation(): void {
+    if (!credentialsReady) {
+      controller.showError({ errorCode: "credentials", error: "请先配置可用的翻译凭据" });
+      return;
+    }
+    void controller.translate();
+  }
+
+  function setLanguage(kind: "source" | "target", value: string): void {
+    if (kind === "source") source = value;
+    else target = value;
+    void configController.patch(kind === "source" ? "sourceLanguage" : "targetLanguage", value);
+  }
+
+  function swapLanguages(): void {
+    const resolved = source === "auto" ? translation.lastDetectedLang : source;
+    if (!resolved) return;
+    const nextSource = target;
+    const nextTarget = resolved;
+    source = nextSource;
+    target = nextTarget;
+    void configController.save({ ...configController.snapshot(), sourceLanguage: nextSource, targetLanguage: nextTarget });
+  }
+
+  function toggleCompareEngine(engine: EngineId): void {
+    const selected = [...config.compareEngines];
+    const next = selected.includes(engine)
+      ? selected.length === 1 ? selected : selected.filter((item) => item !== engine)
+      : [...selected, engine];
+    void configController.patch("compareEngines", next);
+  }
+
+  function speak(text: string, language: string): void {
+    speaker.speak(text, language, { onChange: (value) => (speakingText = value) });
+  }
+
+  async function copyText(text: string, engine?: EngineId): Promise<void> {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      if (engine) copiedEngines[engine] = true;
+      else copied = true;
+      setTimeout(() => {
+        if (engine) copiedEngines[engine] = false;
+        else copied = false;
+      }, 1600);
+    } catch {
+      controller.showError("复制失败，请重试");
+    }
+  }
+
+  function retranslate(): void {
+    if (!translation.output || translation.isProcessing) return;
+    const nextSource = target;
+    let nextTarget = source === "auto" ? (translation.lastDetectedLang || "zh") : source;
+    if (nextSource === nextTarget) nextTarget = nextSource === "zh" ? "en" : "zh";
+    suppressAuto = true;
+    input = translation.output;
+    controller.setOutput("");
+    source = nextSource;
+    target = nextTarget;
+    void configController.save({ ...configController.snapshot(), sourceLanguage: nextSource, targetLanguage: nextTarget });
+    setTimeout(() => {
+      suppressAuto = false;
+      requestTranslation();
+    }, 0);
+  }
+
+  function focusInputFromShortcut(): void {
+    showConfig = false;
+    showHistory = false;
+    void tick().then(() => inputElement?.focus());
+  }
+
+  const shortcuts = createShortcutHandler({
+    onTranslate: requestTranslation,
+    onFocusInput: focusInputFromShortcut,
+    onClearInput: () => (input = ""),
+    onSwapLangs: swapLanguages,
+    onToggleHistory: () => showHistory ? closePanels() : openPanel("history"),
+    onToggleSettings: () => showConfig ? closePanels() : openPanel("config"),
+    onToggleTheme: () => void configController.patch("isDark", !config.isDark),
+    onClosePanel: closePanels,
+  }, {
+    isPanelOpen: () => showConfig || showHistory,
+  });
+
+  function handleGlobalKeydown(event: KeyboardEvent): void {
+    shortcuts(event);
   }
 
   onMount(async () => {
-    await initConfig();
-    const savedHistory = localStorage.getItem("translate_history");
-    if (savedHistory) history = JSON.parse(savedHistory);
+    await configController.load();
+    const loaded = configController.snapshot();
+    source = loaded.sourceLanguage;
+    target = loaded.targetLanguage;
+    try {
+      history = await desktopBridge.loadHistory();
+    } catch {
+      controller.showError("历史记录加载失败");
+    }
+    for (const message of queuedErrors) controller.showError(message);
+    queuedErrors = [];
   });
 
-  async function translate() {
-    if (!input.trim() || isProcessing) return;
-    isProcessing = true;
-    status = "翻译中...";
-    try {
-      let res;
-      if (compareMode) {
-        const engines = Array.isArray(compareEngines) ? compareEngines : ["tencent", "aliyun"];
-        res = await TranslateMulti(input, source, target, engines);
-        compareOutputs = res.results || {};
-        const preferredEngine = activeEngine || engines[0];
-        output = compareOutputs?.[preferredEngine]?.text || "";
-        if (source === "auto") {
-          let detected = langs[res.autoSrc] || res.autoSrc;
-          autoDetectLang = `自动 (${detected})`;
-        }
-      } else {
-        res = await TranslateText(input, source, target, activeEngine);
-        output = res.text;
-        compareOutputs = {};
-        if (source === "auto") {
-          let detected = langs[res.autoSrc] || res.autoSrc;
-          autoDetectLang = `自动 (${detected})`;
-        }
-      }
-      target = res.target || target;
-      status = "完成";
-      // 添加到历史记录
-      addHistory(input, output, source, target);
-    } catch (e) {
-      status = e || "翻译失败";
-      console.error(e);
-    }
-    isProcessing = false;
-  }
-
-  function addHistory(input, output, src, tgt) {
-    const entry = {
-      id: Date.now(),
-      input,
-      output,
-      source: src,
-      target: tgt,
-      time: new Date().toLocaleTimeString([], {
-        hour: "2-digit",
-        minute: "2-digit",
-      }),
-    };
-    history = [entry, ...history];
-  }
-
-  function clearHistory() {
-    history = []; // 清空历史记录
-    localStorage.removeItem("translate_history"); // 清空本地存储的历史记录
-  }
-
-  function handleCopy() {
-    const textToCopy = output;
-    if (!textToCopy) return;
-    navigator.clipboard.writeText(textToCopy);
-    copied = true;
-    setTimeout(() => (copied = false), 2000);
-  }
-
-  function handleCopyEngine(engine) {
-    const textToCopy = compareOutputs?.[engine]?.text;
-    if (!textToCopy) return;
-    navigator.clipboard.writeText(textToCopy);
-    copiedEngines[engine] = true;
-    setTimeout(() => {
-      copiedEngines[engine] = false;
-      copiedEngines = { ...copiedEngines }; // 触发响应式更新
-    }, 2000);
-  }
-
-  /**
-   * @param {{ ctrlKey: any; metaKey: any; key: string; preventDefault: () => void; }} e
-   */
-  function handleGlobalKeydown(e) {
-    // 发送翻译：Ctrl/Cmd + Enter
-    if ((e.ctrlKey || e.metaKey) && e.key === "Enter") {
-      e.preventDefault();
-      translate();
-      return;
-    }
-
-    // 聚焦输入：Ctrl/Cmd + L
-    if ((e.ctrlKey || e.metaKey) && (e.key === "l" || e.key === "L")) {
-      e.preventDefault();
-      if (inputEl) inputEl.focus();
-      return;
-    }
-
-    // 清空输入：Ctrl/Cmd + K
-    if ((e.ctrlKey || e.metaKey) && (e.key === "k" || e.key === "K")) {
-      e.preventDefault();
-      input = "";
-      return;
-    }
-
-    // 交换语言：Ctrl/Cmd + J
-    if ((e.ctrlKey || e.metaKey) && (e.key === "j" || e.key === "J")) {
-      e.preventDefault();
-      [source, target] = [target, source];
-      return;
-    }
-
-    // 切换历史面板：Ctrl/Cmd + Shift + H
-    if ((e.ctrlKey || e.metaKey) && e.shiftKey && (e.key === "h" || e.key === "H")) {
-      e.preventDefault();
-      showHistory = !showHistory;
-      return;
-    }
-
-    // 切换主题：Ctrl/Cmd + M
-    if ((e.ctrlKey || e.metaKey) && (e.key === "m" || e.key === "M")) {
-      e.preventDefault();
-      updateAndSaveConfig("isDark", !currentConfig.isDark);
-      return;
-    }
-
-    // 关闭历史面板：Esc
-    if (e.key === "Escape" && showHistory) {
-      showHistory = false;
-    }
-  }
-
-  function handleHistorySelect(event) {
-    const item = event.detail;
-    input = item.input;
-    output = item.output;
-    showHistory = false;
-  }
-
-  function handleHistoryClose() {
-    showHistory = false;
-  }
-
-  function handleHistoryClear() {
-    clearHistory();
-  }
-
-  // 监视配置窗口的关闭
-  $: if (!showConfig) {
-    refreshConfig();
-  }
-
-  // 抽离出更新配置的逻辑
-  async function refreshConfig() {
-    const cfg = await GetConfig();
-    if (cfg?.defaultEngine) {
-      activeEngine = cfg.defaultEngine;
-    }
-  }
+  onDestroy(() => {
+    controller.destroy();
+    clipboardWatcher.stop();
+    speaker.stop();
+    if (historySaveTimer) clearTimeout(historySaveTimer);
+  });
 </script>
 
-<svelte:window on:keydown={handleGlobalKeydown} />
+<svelte:window onkeydown={handleGlobalKeydown} />
 
-<div class="app-shell" class:light-mode={!isDark}>
-  <aside class="sidebar" class:collapsed={sidebarCollapsed}>
-    <div class="sidebar-header">
-      {#if !sidebarCollapsed}
-        <div class="brand" transition:fade={{ duration: 150 }}>
-          <div class="brand-icon"><Languages size={22} /></div>
-          <span>Translate</span>
-        </div>
-      {/if}
-
-      <button
-        class="collapse-toggle"
-        class:centered={sidebarCollapsed}
-        on:click={toggleSidebar}
-        title={sidebarCollapsed ? "展开" : "收起"}
-      >
-        <div class="icon-wrapper" class:rotated={sidebarCollapsed}>
-          <PanelLeftClose size={18} />
-        </div>
-      </button>
-    </div>
-
-    <nav class="side-nav">
-      <button
-        class="nav-item"
-        on:click={() => (showHistory = true)}
-        title="历史记录"
-      >
-        <div class="nav-icon"><HistoryIcon size={20} /></div>
-        {#if !sidebarCollapsed}
-          <span class="nav-text" transition:fade={{ duration: 100 }}
-            >历史记录</span
-          >
-        {/if}
-      </button>
-    </nav>
-
-    <div class="sidebar-footer">
-      {#if !sidebarCollapsed}
-        <div class="engine-box" transition:fade={{ duration: 100 }}>
-          <!-- svelte-ignore a11y-label-has-associated-control -->
-          <label>翻译引擎</label>
-          <div class="engine-pills">
-            <button
-              class:active={activeEngine === "tencent"}
-              on:click={() => updateAndSaveConfig("defaultEngine", "tencent")}
-              >腾讯</button
-            >
-            <button
-              class:active={activeEngine === "aliyun"}
-              on:click={() => updateAndSaveConfig("defaultEngine", "aliyun")}
-              >阿里</button
-            >
-          </div>
-        </div>
-      {/if}
-
-      <div class="bottom-tools" class:column-layout={sidebarCollapsed}>
-        <button
-          class="tool-btn"
-          on:click={() => updateAndSaveConfig("isDark", !isDark)}
-          title="切换主题"
-        >
-          {#if isDark}<Sun size={18} />{:else}<Moon size={18} />{/if}
-        </button>
-        <button
-          class="tool-btn"
-          on:click={() => (showConfig = true)}
-          title="设置"
-        >
-          <Settings size={18} />
-        </button>
-      </div>
-    </div>
-  </aside>
-
-  <main class="main-content">
-    <header class="workspace-header">
-      <div class="lang-bar">
-        <div class="select-wrapper">
-          <select
-            bind:value={source}
-            style={isDark ? "background: #1e1e1e;" : ""}
-          >
-            <option value="auto">{autoDetectLang}</option>
-            {#each Object.entries(langs) as [code, name]}
-              <option value={code}>{name}</option>
-            {/each}
-          </select>
-        </div>
-
-        <button
-          class="swap-btn"
-          on:click={() => ([source, target] = [target, source])}
-          title="交换语言"
-        >
-          <ArrowLeftRight size={16} />
-        </button>
-
-        <div class="select-wrapper">
-          <select
-            bind:value={target}
-            style={isDark ? "background: #1e1e1e;" : ""}
-          >
-            {#each Object.entries(langs) as [code, name]}
-              <option value={code}>{name}</option>
-            {/each}
-          </select>
-        </div>
-      </div>
-
-      <div class="right-tools">
-        <button
-          class="mode-btn"
-          class:active={compareMode}
-          on:click={() => updateAndSaveConfig("compareMode", !compareMode)}
-          title="多引擎对照"
-        >
-          对照
-        </button>
-        <button
-          class="translate-btn"
-          on:click={translate}
-          disabled={status === "翻译中..."}
-        >
-          <span>{status === "翻译中..." ? "翻译中" : "翻译"}</span>
-          {#if status === "翻译中..."}
-            <span class="loading-dots">...</span>
-          {/if}
-        </button>
-      </div>
-    </header>
-
-    <div class="editor-container">
-      <section class="editor-pane source">
-        <textarea
-          bind:this={inputEl}
-          bind:value={input}
-          placeholder="在此输入要翻译的文本..."
-          spellcheck="false"
-        ></textarea>
-        <div class="pane-footer">
-          <span class="char-count">{input.length} 字符</span>
-          {#if input}
-            <button
-              class="clear-btn"
-              on:click={() => handleSpeak(input, source === "auto" ? "en" : source)}
-              title="朗读"
-            >
-              {#if speakingText === input}
-                <Square size={12} fill="currentColor" />
-              {:else}
-                <Volume2 size={12} />
-              {/if}
-            </button>
-            <button class="clear-btn" on:click={() => (input = "")}
-              ><X size={12} /> 清空</button
-            >
-          {/if}
-        </div>
-      </section>
-
-      <section class="editor-pane result" class:compare-mode={compareMode}>
-        {#if compareMode}
-          <div class="compare-grid">
-            {#each (compareEngines || []) as eng}
-              <div class="compare-card">
-                <div class="compare-header">
-                  <span class="compare-title">{eng === "tencent" ? "腾讯" : "阿里"}</span>
-                  <div class="compare-header-right">
-                    {#if compareOutputs?.[eng]?.error}
-                      <span class="compare-error">失败</span>
-                    {/if}
-                    <button
-                      class="compare-copy-btn"
-                      class:active={speakingText === compareOutputs?.[eng]?.text}
-                      class:disabled={!compareOutputs?.[eng]?.text ||
-                        compareOutputs?.[eng]?.error}
-                      on:click={() =>
-                        handleSpeak(compareOutputs?.[eng]?.text, target)}
-                      title="朗读"
-                    >
-                      {#if speakingText === compareOutputs?.[eng]?.text}
-                        <Square size={12} fill="currentColor" />
-                      {:else}
-                        <Volume2 size={12} />
-                      {/if}
-                    </button>
-                    <button
-                      class="compare-copy-btn"
-                      class:success={copiedEngines[eng]}
-                      class:disabled={!compareOutputs?.[eng]?.text || compareOutputs?.[eng]?.error}
-                      on:click={() => handleCopyEngine(eng)}
-                      title="复制此结果"
-                    >
-                      {#if copiedEngines[eng]}
-                        <Check size={12} />
-                      {:else}
-                        <Copy size={12} />
-                      {/if}
-                    </button>
-                  </div>
-                </div>
-                <textarea
-                  readonly
-                  value={compareOutputs?.[eng]?.text || (compareOutputs?.[eng]?.error ? `错误：${compareOutputs[eng].error}` : "")}
-                  placeholder="翻译结果..."
-                  spellcheck="false"
-                ></textarea>
-              </div>
-            {/each}
-          </div>
-        {:else}
-          <textarea
-            readonly
-            value={output}
-            placeholder="翻译结果..."
-            spellcheck="false"
-          ></textarea>
-        {/if}
-        <div class="pane-footer">
-          {#if !compareMode && output}
-            <button
-              class="action-btn"
-              on:click={() => handleSpeak(output, target)}
-              title="朗读"
-            >
-              {#if speakingText === output}
-                <Square size={14} fill="currentColor" />
-              {:else}
-                <Volume2 size={14} />
-              {/if}
-              朗读
-            </button>
-            <button
-              class="action-btn copy"
-              on:click={handleCopy}
-              class:success={copied}
-            >
-              {#if copied}<Check size={14} />{:else}<Copy size={14} />{/if}
-              {copied ? "已复制" : "复制"}
-            </button>
-          {/if}
-        </div>
-      </section>
-    </div>
-
-    <footer class="app-status-bar">
-      <div class="status-item">
-        <span
-          class="status-dot"
-          class:processing={status === "翻译中..."}
-          class:done={status === "完成"}
-          class:error={status === "翻译失败"}
-        ></span>
-        {status}
-      </div>
-      <div class="status-item shortcut-hint">
-        <Keyboard size={12} />
-        <span>Ctrl+Enter 发送 · Ctrl+L 聚焦 · Ctrl+K 清空 · Ctrl+J 交换 · Ctrl+Shift+H 历史</span>
-      </div>
-    </footer>
-  </main>
-
-  <History
-    bind:show={showHistory}
-    {history}
-    on:select={handleHistorySelect}
-    on:close={handleHistoryClose}
-    on:clear={handleHistoryClear}
+<div class="app-shell" class:light-mode={!config.isDark} class:history-open={showHistory}>
+  <ErrorToast errorToast={translation.errorToast} onRetry={() => controller.retry()} onSettings={() => { controller.dismissError(); openPanel("config"); }} onDismiss={() => controller.dismissError()} />
+  <UtilityRail
+    activePanel={showConfig ? "config" : showHistory ? "history" : null}
+    isDark={config.isDark}
+    onTheme={() => void configController.patch("isDark", !config.isDark)}
+    onSettings={() => openPanel("config")}
+    onHistory={() => openPanel("history")}
   />
 
-  <Config bind:show={showConfig} {isDark} />
+  <main class="main-content">
+    <CommandBar
+      {source} {target} activeEngine={config.defaultEngine} autoTranslate={config.autoTranslate} autoDetectLang={translation.autoDetectLang}
+      detectedSource={translation.lastDetectedLang} clipboardWatch={config.clipboardWatch}
+      compareMode={config.compareMode} isProcessing={translation.isProcessing} {canTranslate} {unavailableReason}
+      onSource={(value) => setLanguage("source", value)} onTarget={(value) => setLanguage("target", value)}
+      onEngine={(engine) => void configController.patch("defaultEngine", engine)}
+      onSwap={swapLanguages} onAuto={(value) => void configController.patch("autoTranslate", value)}
+      onClipboard={() => void configController.patch("clipboardWatch", !config.clipboardWatch)}
+      onCompare={() => void configController.patch("compareMode", !config.compareMode)} onTranslate={requestTranslation}
+    />
+
+    {#if credentialMessage}
+      <div class="credential-banner" role="status">
+        <AlertCircle size={14} />
+        <span>{credentialMessage}</span>
+        <button onclick={() => openPanel("config")} aria-label="配置翻译服务">前往设置</button>
+      </div>
+    {/if}
+
+    <div class="workspace">
+      <section class="editor-pane" aria-labelledby="source-title">
+        <header class="pane-header">
+          <div class="pane-title"><span class="pane-icon"><TextCursorInput size={14} /></span><span class="pane-label">输入</span><h2 id="source-title">原文</h2></div>
+          <span class="char-count">{input.length} 字符</span>
+        </header>
+        <textarea class="editor" bind:this={inputElement} bind:value={input} placeholder="输入要翻译的文本" aria-label="原文" aria-keyshortcuts={ARIA_SHORTCUTS.focusInput} spellcheck="false"></textarea>
+        <footer class="pane-footer">
+          <span class="pane-note">{config.autoTranslate ? "自动翻译" : "手动翻译"}</span>
+          <div class="pane-actions">
+            {#if input}
+              <button class="icon-action" onclick={() => speak(input, source === "auto" ? (translation.lastDetectedLang || "en") : source)} aria-label="朗读原文" title="朗读原文">{#if speakingText === input}<Square size={13} />{:else}<Volume2 size={14} />{/if}</button>
+              <button class="icon-action" onclick={() => (input = "")} aria-label="清空原文" aria-keyshortcuts={ARIA_SHORTCUTS.clearInput} title="清空原文"><X size={14} /></button>
+            {/if}
+          </div>
+        </footer>
+      </section>
+
+      <section class="editor-pane result-pane" aria-labelledby="result-title" aria-busy={translation.isProcessing}>
+        <header class="pane-header">
+          <div class="pane-title"><span class="pane-icon result"><Languages size={14} /></span><span class="pane-label">输出</span><h2 id="result-title">{config.compareMode ? "对照译文" : "译文"}</h2><span class="pane-context">{config.compareMode ? "多引擎" : config.defaultEngine === "tencent" ? "混元" : "阿里云"}</span></div>
+          {#if translation.isProcessing && translation.output}<span class="updating"><i></i>正在更新</span>{/if}
+        </header>
+        {#if config.compareMode}
+          <div class="compare-wrap"><ComparePanel engines={config.compareEngines} outputs={translation.compareOutputs} loading={translation.compareLoadingEngines} copied={copiedEngines} {speakingText} {target} {isConfigured} onToggle={toggleCompareEngine} onCopy={(engine) => void copyText(translation.compareOutputs[engine]?.text ?? "", engine)} onSpeak={speak} onSettings={() => openPanel("config")} /></div>
+        {:else if translation.output}
+          <textarea class="editor" readonly value={translation.output} aria-label="译文"></textarea>
+          <footer class="pane-footer">
+            <span class="pane-note">{langs[target] ?? target}</span>
+            <div class="pane-actions">
+              <button class="icon-action" onclick={() => speak(translation.output, target)} aria-label="朗读译文" title="朗读译文">{#if speakingText === translation.output}<Square size={13} />{:else}<Volume2 size={14} />{/if}</button>
+              <button onclick={retranslate} aria-label="重新翻译译文" title="重新翻译"><CornerDownLeft size={14} /><span class="action-label">再翻译</span></button>
+              <button class:success={copied} onclick={() => void copyText(translation.output)} aria-label={copied ? "译文已复制" : "复制译文"} title="复制译文">{#if copied}<Check size={14} /><span class="action-label">已复制</span>{:else}<Copy size={14} /><span class="action-label">复制</span>{/if}</button>
+            </div>
+          </footer>
+        {:else}
+          <div class="result-empty"><span class="empty-icon"><Languages size={23} strokeWidth={1.4} /></span><strong>等待翻译</strong><span>译文将在这里显示</span></div>
+        {/if}
+      </section>
+    </div>
+    <StatusBar status={translation.status} bridgeKind={desktopBridge.kind} {source} {target} activeEngine={config.defaultEngine} compareMode={config.compareMode} />
+  </main>
+
+  <Config open={showConfig} {config} onClose={closePanels} onSave={(next) => configController.save(next)} onTest={(engine, service) => desktopBridge.testConnection(engine, service)} />
+  <History open={showHistory} {history} onClose={closePanels} onClear={() => { history = []; scheduleHistorySave(); }} onSelect={(entry) => { suppressAuto = true; input = entry.input; source = entry.source; target = entry.target; controller.restore(entry); closePanels(); setTimeout(() => (suppressAuto = false), 0); }} />
 </div>
 
 <style>
-  .right-tools {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-  }
-
-  .mode-btn {
-    background: transparent;
-    border: 1px solid var(--border);
-    color: var(--text-sec);
-    padding: 8px 12px;
-    border-radius: 999px;
-    font-size: 12px;
-    font-weight: 600;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-  .mode-btn:hover {
-    background: var(--bg-hover);
-    color: var(--text-main);
-  }
-  .mode-btn.active {
-    border-color: var(--primary);
-    color: var(--primary);
-    background: rgba(59, 130, 246, 0.08);
-  }
-
-  .compare-grid {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    height: 100%;
-    overflow-y: auto;
-  }
-  .compare-card {
-    display: flex;
-    flex-direction: column;
-    flex: 1;
-    min-height: 0; /* 允许内部 textarea 撑满剩余高度 */
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 8px 10px;
-    background: rgba(0, 0, 0, 0.08);
-    overflow: hidden;
-  }
-  .compare-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 6px;
-    font-size: 12px;
-    color: var(--text-sec);
-  }
-  .compare-header-right {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-width: 40px; /* 预留复制按钮空间，避免出现/消失时抖动 */
-    justify-content: flex-end;
-  }
-  .compare-title {
-    font-weight: 700;
-    color: var(--text-main);
-    display: flex;
-    align-items: center;
-    gap: 8px;
-  }
-  .compare-error {
-    color: #ef4444;
-    font-weight: 700;
-  }
-  .compare-copy-btn {
-    background: transparent;
-    border: 1px solid var(--border);
-    color: var(--text-sec);
-    padding: 4px 8px;
-    border-radius: 6px;
-    font-size: 12px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    transition: all 0.2s;
-    min-width: 28px;
-    height: 24px;
-  }
-  .compare-copy-btn.disabled {
-    visibility: hidden; /* 保留占位，不触发布局抖动 */
-    pointer-events: none;
-  }
-  .compare-copy-btn:hover {
-    border-color: var(--text-sec);
-    background: var(--bg-hover);
-    color: var(--text-main);
-  }
-  .compare-copy-btn.success {
-    border-color: #10b981;
-    color: #10b981;
-    background: rgba(16, 185, 129, 0.1);
-  }
-  .compare-copy-btn.active {
-    border-color: var(--primary);
-    color: var(--primary);
-    background: rgba(59, 130, 246, 0.1);
-  }
-
-  .compare-card textarea {
-    flex: 1;
-    min-height: 0;
-    margin-top: 4px;
-    padding: 6px 0 0;
-    border-top: 1px dashed var(--border);
-    font-size: 14px;
-  }
-  :root {
-    --bg-base: #121212;
-    --bg-sidebar: #181818;
-    --bg-surface: #1e1e1e;
-    --bg-hover: #2a2a2a;
-    --border: #333;
-    --primary: #3b82f6;
-    --primary-hover: #2563eb;
-    --text-main: #e5e5e5;
-    --text-sec: #a3a3a3;
-    --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3),
-      0 2px 4px -1px rgba(0, 0, 0, 0.16);
-    --sidebar-w: 240px;
-    --sidebar-collapsed-w: 72px;
-  }
-
-  .light-mode {
-    --bg-base: #ffffff;
-    --bg-sidebar: #f8f9fa;
-    --bg-surface: #ffffff;
-    --bg-hover: #e9ecef;
-    --border: #e5e7eb;
-    --primary: #2563eb;
-    --primary-hover: #1d4ed8;
-    --text-main: #1f2937;
-    --text-sec: #6b7280;
-    --shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1),
-      0 2px 4px -1px rgba(0, 0, 0, 0.06);
-  }
-
-  /* 全局重置 */
-  * {
-    box-sizing: border-box;
-  }
-
-  .app-shell {
-    display: flex;
-    height: 100vh;
-    background: var(--bg-base);
-    color: var(--text-main);
-    font-family:
-      "Inter",
-      -apple-system,
-      BlinkMacSystemFont,
-      "Segoe UI",
-      Roboto,
-      sans-serif;
-    overflow: hidden;
-  }
-
-  /* --- 侧边栏 --- */
-  .sidebar {
-    width: var(--sidebar-w);
-    background: var(--bg-sidebar);
-    border-right: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    transition: width 0.3s cubic-bezier(0.2, 0, 0, 1);
-    z-index: 10;
-    flex-shrink: 0;
-    backdrop-filter: blur(10px); /* 增加毛玻璃 */
-    -webkit-backdrop-filter: blur(10px);
-  }
-
-  .sidebar.collapsed {
-    width: var(--sidebar-collapsed-w);
-  }
-
-  .sidebar-header {
-    height: 64px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between; /* 默认两端对齐 */
-    padding: 0 16px;
-    position: relative;
-  }
-
-  .brand {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    font-weight: 700;
-    font-size: 16px;
-    color: var(--text-main);
-    white-space: nowrap;
-    overflow: hidden;
-  }
-  .brand-icon {
-    color: var(--primary);
-  }
-
-  /* 切换按钮样式 */
-  .collapse-toggle {
-    background: transparent;
-    border: none;
-    color: var(--text-sec);
-    width: 32px;
-    height: 32px;
-    border-radius: 6px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    cursor: pointer;
-    transition: all 0.2s;
-  }
-  .collapse-toggle:hover {
-    background: var(--bg-hover);
-    color: var(--text-main);
-  }
-  /* 当侧边栏折叠时，按钮居中显示 */
-  .collapse-toggle.centered {
-    margin: 0 auto;
-    width: 100%;
-  }
-
-  .icon-wrapper {
-    display: flex;
-    transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1);
-  }
-  /* 图标旋转动画：利用 CSS Transform 翻转 */
-  .icon-wrapper.rotated {
-    transform: rotate(180deg);
-  }
-
-  .side-nav {
-    flex: 1;
-    padding: 16px 12px;
-    display: flex;
-    flex-direction: column;
-    gap: 4px;
-  }
-
-  .nav-item {
-    display: flex;
-    align-items: center;
-    padding: 10px;
-    background: transparent;
-    border: none;
-    border-radius: 8px;
-    color: var(--text-sec);
-    cursor: pointer;
-    transition: all 0.2s;
-    height: 44px;
-    width: 100%;
-    text-align: left;
-  }
-  .nav-item:hover {
-    background: var(--bg-hover);
-    color: var(--text-main);
-  }
-  .nav-icon {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    min-width: 24px; /* 确保图标位置固定 */
-  }
-  .nav-text {
-    margin-left: 12px;
-    font-size: 14px;
-    font-weight: 500;
-    white-space: nowrap;
-  }
-
-  .sidebar-footer {
-    border-top: 1px solid var(--border);
-    display: flex;
-    flex-direction: column;
-    gap: 16px;
-    padding: 16px 12px;
-    transition: padding 0.3s;
-  }
-
-  .engine-box label {
-    font-size: 11px;
-    font-weight: 600;
-    color: var(--text-sec);
-    margin-bottom: 8px;
-    display: block;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-  }
-  .engine-pills {
-    display: flex;
-    background: var(--bg-hover);
-    border-radius: 6px;
-    padding: 3px;
-  }
-  .engine-pills button {
-    flex: 1;
-    border: none;
-    background: transparent;
-    color: var(--text-sec);
-    font-size: 12px;
-    padding: 6px;
-    border-radius: 4px;
-    cursor: pointer;
-    transition: 0.2s;
-  }
-  .engine-pills button.active {
-    background: var(--bg-surface);
-    color: var(--text-main);
-    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.1);
-    font-weight: 500;
-  }
-
-  .bottom-tools {
-    display: flex;
-    gap: 8px;
-    justify-content: space-between;
-    /* transition: all 0.3s cubic-bezier(0.2, 0, 0, 1); */
-    transition: all 0.3s;
-  }
-
-  /* 引擎选择框在折叠时的过渡 */
-  .engine-box {
-    overflow: hidden;
-    transition:
-      max-height 0.3s,
-      opacity 0.2s;
-  }
-
-  .sidebar.collapsed .sidebar-footer {
-    padding: 16px 0; /* 折叠时取消左右内边距，方便图标居中 */
-  }
-
-  /* 当侧边栏折叠时，改变工具栏布局 */
-  .sidebar.collapsed .bottom-tools {
-    flex-direction: column; /* 改为垂直排列 */
-    align-items: center; /* 居中对齐 */
-    gap: 12px; /* 增加垂直间距 */
-  }
-
-  .tool-btn {
-    background: transparent;
-    border: 1px solid transparent;
-    color: var(--text-sec);
-    padding: 8px;
-    border-radius: 8px;
-    cursor: pointer;
-    flex: 1;
-    display: flex;
-    justify-content: center;
-    align-items: center; /* 确保图标在按钮内部绝对居中 */
-    transition: 0.2s;
-    min-width: 0; /* 防止折叠时撑开容器 */
-  }
-
-  .sidebar.collapsed .tool-btn {
-    width: 40px; /* 给一个固定的宽度 */
-    height: 40px;
-    flex: none; /* 取消 flex: 1 */
-  }
-  .tool-btn:hover {
-    background: var(--bg-hover);
-    color: var(--text-main);
-    border-color: var(--border);
-  }
-
-  /* --- 主内容 --- */
-  .main-content {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    background: var(--bg-surface);
-    position: relative;
-    z-index: 1;
-  }
-
-  .workspace-header {
-    height: 64px;
-    padding: 0 24px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    border-bottom: 1px solid var(--border);
-  }
-
-  .lang-bar {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-
-  .select-wrapper {
-    position: relative;
-  }
-  .select-wrapper select {
-    appearance: none;
-    background: transparent;
-    border: none;
-    color: var(--text-main);
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    padding: 8px 12px;
-    border-radius: 6px;
-    outline: none;
-  }
-  .select-wrapper select:hover {
-    background: var(--bg-hover);
-  }
-
-  .swap-btn {
-    background: transparent;
-    border: none;
-    color: var(--text-sec);
-    padding: 8px;
-    border-radius: 50%;
-    cursor: pointer;
-    transition: 0.2s;
-    display: flex;
-  }
-  .swap-btn:hover {
-    background: var(--bg-hover);
-    color: var(--primary);
-    transform: rotate(180deg);
-  }
-
-  .translate-btn {
-    background: linear-gradient(135deg, var(--primary), var(--primary-hover));
-    color: white;
-    border: none;
-    padding: 8px 24px;
-    border-radius: 20px;
-    font-size: 14px;
-    font-weight: 600;
-    cursor: pointer;
-    box-shadow: 0 4px 10px rgba(59, 130, 246, 0.3);
-    transition:
-      transform 0.1s,
-      box-shadow 0.2s;
-  }
-  .translate-btn:hover {
-    box-shadow: 0 6px 14px rgba(59, 130, 246, 0.4);
-  }
-  .translate-btn:active {
-    transform: scale(0.96);
-  }
-  .translate-btn:disabled {
-    opacity: 0.7;
-    cursor: not-allowed;
-  }
-
-  .editor-container {
-    flex: 1;
-    display: flex;
-    overflow: hidden;
-  }
-
-  .editor-pane {
-    flex: 1;
-    display: flex;
-    flex-direction: column;
-    padding: 24px;
-    position: relative;
-    transition: background 0.3s;
-  }
-  .editor-pane.source {
-    border-right: 1px solid var(--border);
-    flex: 0.9; /* 略缩小原文区域高度 */
-  }
-  .editor-pane.result {
-    background: var(--bg-base); /* 结果区稍微深一点/浅一点区分 */
-    /* 给结果内容更多空间 */
-    padding: 14px 16px;
-    flex: 1.1; /* 略放大翻译结果区域高度 */
-  }
-
-  textarea {
-    flex: 1;
-    background: transparent;
-    border: none;
-    resize: none;
-    outline: none;
-    font-size: 18px;
-    line-height: 1.6;
-    color: var(--text-main);
-    padding: 0;
-  }
-  textarea::placeholder {
-    color: var(--text-sec);
-    opacity: 0.5;
-  }
-
-  .pane-footer {
-    height: 30px;
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 10px;
-    margin-top: 10px;
-  }
-  /* 对照模式下隐藏 footer，让结果区域占满空间 */
-  .editor-pane.result.compare-mode .pane-footer {
-    height: 0;
-    margin-top: 0;
-    overflow: hidden;
-  }
-  /* 对照模式下让 compare-grid 占满整个空间 */
-  .editor-pane.result.compare-mode {
-    padding-bottom: 14px; /* 保持底部 padding，但移除 footer 空间 */
-  }
-  .char-count {
-    font-size: 12px;
-    color: var(--text-sec);
-    margin-right: auto;
-  }
-
-  .clear-btn {
-    background: transparent;
-    border: none;
-    color: var(--text-sec);
-    font-size: 12px;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 4px;
-  }
-  .clear-btn:hover {
-    color: var(--text-main);
-  }
-
-  .action-btn {
-    background: transparent;
-    border: 1px solid var(--border);
-    color: var(--text-main);
-    padding: 4px 10px;
-    border-radius: 6px;
-    font-size: 12px;
-    font-weight: 500;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    transition: all 0.2s;
-  }
-  .action-btn:hover {
-    border-color: var(--text-sec);
-    background: var(--bg-hover);
-  }
-  .action-btn.success {
-    border-color: #10b981;
-    color: #10b981;
-    background: rgba(16, 185, 129, 0.1);
-  }
-
-  /* 状态栏 */
-  .app-status-bar {
-    height: 32px;
-    border-top: 1px solid var(--border);
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 0 16px;
-    font-size: 11px;
-    color: var(--text-sec);
-    background: var(--bg-sidebar);
-  }
-  .status-item {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-  .status-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: 50%;
-    background: #10b981; /* Ready Green */
-  }
-  .status-dot.processing {
-    background: #f59e0b;
-    animation: pulse 1s infinite;
-  }
-  .status-dot.error {
-    background: #ef4444;
-  }
-
-  @keyframes pulse {
-    0% {
-      opacity: 1;
-    }
-    50% {
-      opacity: 0.4;
-    }
-    100% {
-      opacity: 1;
-    }
+  .app-shell { --history-drawer-w: 440px; display: flex; width: 100vw; height: 100vh; overflow: hidden; background: var(--bg-base); color: var(--text-main); }
+  .main-content { display: flex; min-width: 0; flex: 1; flex-direction: column; background: var(--bg-workspace); transition: margin-right var(--t-base) var(--ease-standard); }
+  .credential-banner { display: flex; min-height: 30px; flex: 0 0 auto; align-items: center; gap: var(--sp-2); border-bottom: 1px solid var(--warning-border); padding: 0 var(--sp-3); background: var(--warning-soft); color: var(--text-sec); font-size: var(--fs-xs); }
+  .credential-banner span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .credential-banner :global(svg) { color: var(--warning); }
+  .credential-banner button { flex: 0 0 auto; border: 0; padding: 0; background: transparent; color: var(--warning); cursor: pointer; font: inherit; font-weight: var(--fw-semibold); }
+  .credential-banner button:hover { color: var(--text-main); }
+  .workspace { display: grid; min-height: 0; flex: 1; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1px; background: var(--border-soft); }
+  .editor-pane { position: relative; display: flex; min-width: 0; min-height: 0; flex-direction: column; background: var(--bg-panel); transition: box-shadow var(--t-base) var(--ease-standard); }
+  .editor-pane:focus-within { z-index: 1; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 45%, transparent); }
+  .result-pane { background: var(--bg-panel-muted); }
+  .pane-header { display: flex; min-height: 42px; flex: 0 0 auto; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border-soft); padding: 0 var(--sp-3); }
+  .pane-title { display: flex; min-width: 0; align-items: center; gap: var(--sp-2); }
+  .pane-icon { display: grid; width: 26px; height: 26px; flex: 0 0 auto; place-items: center; border-radius: var(--radius-sm); background: var(--bg-hover); color: var(--text-sec); }
+  .pane-icon.result { background: var(--primary-soft); color: var(--primary); }
+  .pane-label { color: var(--text-muted); font-size: var(--fs-xs); }
+  h2 { margin: 0; color: var(--text-main); font-size: var(--fs-base); font-weight: var(--fw-semibold); }
+  .pane-context { overflow: hidden; padding-left: var(--sp-2); border-left: 1px solid var(--border); color: var(--text-muted); font-size: var(--fs-xs); text-overflow: ellipsis; white-space: nowrap; }
+  .char-count { color: var(--text-muted); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
+  .editor { width: 100%; min-height: 0; flex: 1; resize: none; border: 0; outline: 0; padding: 18px; background: transparent; color: var(--text-main); font: var(--fw-regular) var(--fs-lg)/var(--lh-relaxed) var(--font-sans); }
+  .editor::placeholder { color: color-mix(in srgb, var(--text-muted) 84%, transparent); }
+  .pane-footer { display: flex; min-height: 38px; flex: 0 0 auto; align-items: center; justify-content: space-between; border-top: 1px solid var(--border-soft); padding: 0 var(--sp-3); color: var(--text-muted); font-size: var(--fs-xs); }
+  .pane-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pane-actions { display: flex; min-width: 0; align-items: center; gap: 2px; }
+  .pane-footer button { display: inline-flex; height: 28px; align-items: center; justify-content: center; gap: var(--sp-1); border: 1px solid transparent; border-radius: var(--radius-sm); padding: 0 var(--sp-2); background: transparent; color: var(--text-sec); cursor: pointer; font: inherit; }
+  .pane-footer button:hover { border-color: var(--border); background: var(--bg-hover); color: var(--text-main); }
+  .pane-footer button.icon-action { width: 28px; padding: 0; }
+  .pane-footer button.success { color: var(--success); }
+  .result-empty { display: grid; flex: 1; place-content: center; place-items: center; gap: var(--sp-2); color: var(--text-muted); font-size: var(--fs-xs); }
+  .result-empty strong { color: var(--text-sec); font-size: var(--fs-sm); font-weight: var(--fw-medium); }
+  .empty-icon { display: grid; width: 44px; height: 44px; margin-bottom: var(--sp-1); place-items: center; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-surface); color: var(--text-sec); }
+  .updating { display: flex; align-items: center; gap: var(--sp-2); color: var(--primary); font-size: var(--fs-xs); }
+  .updating i { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); animation: pulse 1s infinite; }
+  .compare-wrap { display: flex; min-height: 0; flex: 1; flex-direction: column; }
+  @keyframes pulse { 50% { opacity: .3; } }
+  @media (min-width: 1180px) {
+    .app-shell.history-open .main-content { margin-right: var(--history-drawer-w); }
+    .app-shell.history-open :global(.mode-toggles button) { width: 30px; padding-inline: 0; }
+    .app-shell.history-open :global(.mode-toggles span) { display: none; }
+    .app-shell.history-open :global(.engine-switch button) { min-width: 48px; }
+  }
+  @media (max-width: 720px) {
+    .workspace { grid-template-columns: 1fr; grid-template-rows: minmax(220px, 1fr) minmax(220px, 1fr); overflow: auto; }
+    .credential-banner { min-height: 30px; }
+    .editor { padding: var(--sp-4); }
+  }
+  @media (max-width: 460px) {
+    .credential-banner { padding-inline: var(--sp-2); }
+    .credential-banner span { white-space: nowrap; }
+    .pane-header, .pane-footer { padding-inline: var(--sp-2); }
+    .pane-label { display: none; }
+    .action-label { display: none; }
+    .pane-footer button:not(.icon-action) { width: 28px; padding: 0; }
   }
 </style>

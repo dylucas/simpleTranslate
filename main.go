@@ -14,10 +14,12 @@ func main() {
 	app := NewApp()
 
 	err := wails.Run(&options.App{
-		Title:  "简单翻译",
-		Width:  1000,
-		Height: 600,
-		Assets: assets,
+		Title:     "简单翻译",
+		Width:     1000,
+		Height:    600,
+		MinWidth:  640,
+		MinHeight: 480,
+		Assets:    assets,
 		Bind: []interface{}{
 			app,
 		},
