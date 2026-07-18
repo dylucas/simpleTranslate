@@ -13,9 +13,9 @@
   import Config from "./lib/Config.svelte";
   import ErrorToast from "./lib/ErrorToast.svelte";
   import History from "./lib/History.svelte";
-  import LanguageBar from "./lib/LanguageBar.svelte";
-  import Sidebar from "./lib/Sidebar.svelte";
+  import CommandBar from "./lib/CommandBar.svelte";
   import StatusBar from "./lib/StatusBar.svelte";
+  import UtilityRail from "./lib/UtilityRail.svelte";
 
   let input = $state("");
   let source = $state("auto");
@@ -243,41 +243,71 @@
 
 <div class="app-shell" class:light-mode={!config.isDark}>
   <ErrorToast errorToast={translation.errorToast} onRetry={() => controller.retry()} onSettings={() => { controller.dismissError(); openPanel("config"); }} onDismiss={() => controller.dismissError()} />
-  <Sidebar collapsed={config.sidebarCollapsed} activeEngine={config.defaultEngine} isDark={config.isDark} onToggle={() => void configController.patch("sidebarCollapsed", !config.sidebarCollapsed)} onEngine={(engine) => void configController.patch("defaultEngine", engine)} onTheme={() => void configController.patch("isDark", !config.isDark)} onSettings={() => openPanel("config")} onHistory={() => openPanel("history")} />
+  <UtilityRail
+    activePanel={showConfig ? "config" : showHistory ? "history" : null}
+    isDark={config.isDark}
+    onTheme={() => void configController.patch("isDark", !config.isDark)}
+    onSettings={() => openPanel("config")}
+    onHistory={() => openPanel("history")}
+  />
 
   <main class="main-content">
-    {#if credentialMessage}
-      <div class="credential-banner" role="status"><AlertCircle size={15} /><span>{credentialMessage}</span><button onclick={() => openPanel("config")}>前往设置</button></div>
-    {/if}
-
-    <LanguageBar
-      {source} {target} autoTranslate={config.autoTranslate} autoDetectLang={translation.autoDetectLang}
+    <CommandBar
+      {source} {target} activeEngine={config.defaultEngine} autoTranslate={config.autoTranslate} autoDetectLang={translation.autoDetectLang}
       detectedSource={translation.lastDetectedLang} clipboardWatch={config.clipboardWatch}
       compareMode={config.compareMode} isProcessing={translation.isProcessing} {canTranslate} {unavailableReason}
       onSource={(value) => setLanguage("source", value)} onTarget={(value) => setLanguage("target", value)}
+      onEngine={(engine) => void configController.patch("defaultEngine", engine)}
       onSwap={swapLanguages} onAuto={(value) => void configController.patch("autoTranslate", value)}
       onClipboard={() => void configController.patch("clipboardWatch", !config.clipboardWatch)}
       onCompare={() => void configController.patch("compareMode", !config.compareMode)} onTranslate={requestTranslation}
     />
 
+    {#if credentialMessage}
+      <div class="credential-banner" role="status">
+        <AlertCircle size={14} />
+        <span>{credentialMessage}</span>
+        <button onclick={() => openPanel("config")} aria-label="配置翻译服务">前往设置</button>
+      </div>
+    {/if}
+
     <div class="workspace">
       <section class="editor-pane" aria-labelledby="source-title">
-        <header class="pane-header"><div><span class="pane-icon"><TextCursorInput size={15} /></span><span><small>输入</small><h2 id="source-title">原文</h2></span></div><span class="char-count">{input.length} 字符</span></header>
+        <header class="pane-header">
+          <div class="pane-title"><span class="pane-icon"><TextCursorInput size={14} /></span><span class="pane-label">输入</span><h2 id="source-title">原文</h2></div>
+          <span class="char-count">{input.length} 字符</span>
+        </header>
         <textarea class="editor" bind:this={inputElement} bind:value={input} placeholder="输入要翻译的文本" aria-label="原文" spellcheck="false"></textarea>
-        <footer class="pane-footer"><span>{config.autoTranslate ? "自动翻译已开启" : "手动翻译"}</span><div>
-          {#if input}<button onclick={() => speak(input, source === "auto" ? (translation.lastDetectedLang || "en") : source)} aria-label="朗读原文" title="朗读">{#if speakingText === input}<Square size={13} />{:else}<Volume2 size={14} />{/if}</button><button class="icon-action" onclick={() => (input = "")} aria-label="清空原文" title="清空"><X size={14} /></button>{/if}
-        </div></footer>
+        <footer class="pane-footer">
+          <span class="pane-note">{config.autoTranslate ? "自动翻译" : "手动翻译"}</span>
+          <div class="pane-actions">
+            {#if input}
+              <button class="icon-action" onclick={() => speak(input, source === "auto" ? (translation.lastDetectedLang || "en") : source)} aria-label="朗读原文" title="朗读原文">{#if speakingText === input}<Square size={13} />{:else}<Volume2 size={14} />{/if}</button>
+              <button class="icon-action" onclick={() => (input = "")} aria-label="清空原文" title="清空原文"><X size={14} /></button>
+            {/if}
+          </div>
+        </footer>
       </section>
 
       <section class="editor-pane result-pane" aria-labelledby="result-title" aria-busy={translation.isProcessing}>
-        <header class="pane-header"><div><span class="pane-icon result"><Languages size={15} /></span><span><small>输出 · {config.compareMode ? "多引擎" : config.defaultEngine === "tencent" ? "混元" : "阿里云"}</small><h2 id="result-title">{config.compareMode ? "对照译文" : "译文"}</h2></span></div>{#if translation.isProcessing && translation.output}<span class="updating"><i></i>正在更新</span>{/if}</header>
+        <header class="pane-header">
+          <div class="pane-title"><span class="pane-icon result"><Languages size={14} /></span><span class="pane-label">输出</span><h2 id="result-title">{config.compareMode ? "对照译文" : "译文"}</h2><span class="pane-context">{config.compareMode ? "多引擎" : config.defaultEngine === "tencent" ? "混元" : "阿里云"}</span></div>
+          {#if translation.isProcessing && translation.output}<span class="updating"><i></i>正在更新</span>{/if}
+        </header>
         {#if config.compareMode}
           <div class="compare-wrap"><ComparePanel engines={config.compareEngines} outputs={translation.compareOutputs} loading={translation.compareLoadingEngines} copied={copiedEngines} {speakingText} {target} {isConfigured} onToggle={toggleCompareEngine} onCopy={(engine) => void copyText(translation.compareOutputs[engine]?.text ?? "", engine)} onSpeak={speak} onSettings={() => openPanel("config")} /></div>
         {:else if translation.output}
           <textarea class="editor" readonly value={translation.output} aria-label="译文"></textarea>
-          <footer class="pane-footer"><span>{langs[target] ?? target}</span><div><button onclick={() => speak(translation.output, target)} aria-label="朗读译文">{#if speakingText === translation.output}<Square size={13} />{:else}<Volume2 size={14} />{/if}</button><button onclick={retranslate}><CornerDownLeft size={14} />再翻译</button><button class:success={copied} onclick={() => void copyText(translation.output)}>{#if copied}<Check size={14} />已复制{:else}<Copy size={14} />复制{/if}</button></div></footer>
+          <footer class="pane-footer">
+            <span class="pane-note">{langs[target] ?? target}</span>
+            <div class="pane-actions">
+              <button class="icon-action" onclick={() => speak(translation.output, target)} aria-label="朗读译文" title="朗读译文">{#if speakingText === translation.output}<Square size={13} />{:else}<Volume2 size={14} />{/if}</button>
+              <button onclick={retranslate} aria-label="重新翻译译文" title="重新翻译"><CornerDownLeft size={14} /><span class="action-label">再翻译</span></button>
+              <button class:success={copied} onclick={() => void copyText(translation.output)} aria-label={copied ? "译文已复制" : "复制译文"} title="复制译文">{#if copied}<Check size={14} /><span class="action-label">已复制</span>{:else}<Copy size={14} /><span class="action-label">复制</span>{/if}</button>
+            </div>
+          </footer>
         {:else}
-          <div class="result-empty"><span class="empty-icon"><Languages size={26} strokeWidth={1.35} /></span><span>等待翻译</span></div>
+          <div class="result-empty"><span class="empty-icon"><Languages size={23} strokeWidth={1.4} /></span><strong>等待翻译</strong><span>译文将在这里显示</span></div>
         {/if}
       </section>
     </div>
@@ -291,35 +321,50 @@
 <style>
   .app-shell { display: flex; width: 100vw; height: 100vh; overflow: hidden; background: var(--bg-base); color: var(--text-main); }
   .main-content { display: flex; min-width: 0; flex: 1; flex-direction: column; background: var(--bg-workspace); }
-  .credential-banner { display: flex; min-height: 34px; flex: 0 0 auto; align-items: center; justify-content: center; gap: var(--sp-2); border-bottom: 1px solid var(--warning-border); padding: 0 var(--sp-4); background: var(--warning-soft); color: var(--text-sec); font-size: var(--fs-sm); }
+  .credential-banner { display: flex; min-height: 30px; flex: 0 0 auto; align-items: center; gap: var(--sp-2); border-bottom: 1px solid var(--warning-border); padding: 0 var(--sp-3); background: var(--warning-soft); color: var(--text-sec); font-size: var(--fs-xs); }
   .credential-banner span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .credential-banner :global(svg) { color: var(--warning); }
-  .credential-banner button { flex: 0 0 auto; border: 0; background: transparent; color: var(--primary); cursor: pointer; font: inherit; font-weight: var(--fw-semibold); }
+  .credential-banner button { flex: 0 0 auto; border: 0; padding: 0; background: transparent; color: var(--warning); cursor: pointer; font: inherit; font-weight: var(--fw-semibold); }
+  .credential-banner button:hover { color: var(--text-main); }
   .workspace { display: grid; min-height: 0; flex: 1; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 1px; background: var(--border-soft); }
   .editor-pane { position: relative; display: flex; min-width: 0; min-height: 0; flex-direction: column; background: var(--bg-panel); transition: box-shadow var(--t-base) var(--ease-standard); }
   .editor-pane:focus-within { z-index: 1; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--primary) 45%, transparent); }
   .result-pane { background: var(--bg-panel-muted); }
-  .pane-header { display: flex; min-height: 56px; flex: 0 0 auto; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border-soft); padding: 0 var(--sp-4); }
-  .pane-header > div { display: flex; align-items: center; gap: var(--sp-3); }
-  .pane-icon { display: grid; width: 30px; height: 30px; place-items: center; border-radius: var(--radius-md); background: var(--bg-hover); color: var(--text-sec); }
+  .pane-header { display: flex; min-height: 42px; flex: 0 0 auto; align-items: center; justify-content: space-between; border-bottom: 1px solid var(--border-soft); padding: 0 var(--sp-3); }
+  .pane-title { display: flex; min-width: 0; align-items: center; gap: var(--sp-2); }
+  .pane-icon { display: grid; width: 26px; height: 26px; flex: 0 0 auto; place-items: center; border-radius: var(--radius-sm); background: var(--bg-hover); color: var(--text-sec); }
   .pane-icon.result { background: var(--primary-soft); color: var(--primary); }
-  .pane-header small { display: block; color: var(--text-muted); font-size: var(--fs-xs); }
-  h2 { margin: 1px 0 0; color: var(--text-main); font-size: var(--fs-md); }
+  .pane-label { color: var(--text-muted); font-size: var(--fs-xs); }
+  h2 { margin: 0; color: var(--text-main); font-size: var(--fs-base); font-weight: var(--fw-semibold); }
+  .pane-context { overflow: hidden; padding-left: var(--sp-2); border-left: 1px solid var(--border); color: var(--text-muted); font-size: var(--fs-xs); text-overflow: ellipsis; white-space: nowrap; }
   .char-count { color: var(--text-muted); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
-  .editor { width: 100%; min-height: 0; flex: 1; resize: none; border: 0; outline: 0; padding: var(--sp-5); background: transparent; color: var(--text-main); font: var(--fw-regular) var(--fs-xl)/var(--lh-relaxed) var(--font-sans); }
+  .editor { width: 100%; min-height: 0; flex: 1; resize: none; border: 0; outline: 0; padding: 18px; background: transparent; color: var(--text-main); font: var(--fw-regular) var(--fs-lg)/var(--lh-relaxed) var(--font-sans); }
   .editor::placeholder { color: color-mix(in srgb, var(--text-muted) 84%, transparent); }
-  .pane-footer { display: flex; min-height: 46px; flex: 0 0 auto; align-items: center; justify-content: space-between; border-top: 1px solid var(--border-soft); padding: 0 var(--sp-4); color: var(--text-muted); font-size: var(--fs-xs); }
-  .pane-footer > div { display: flex; gap: var(--sp-1); }
-  .pane-footer button { display: inline-flex; min-height: 30px; align-items: center; gap: var(--sp-1); border: 1px solid transparent; border-radius: var(--radius-md); padding: 0 var(--sp-2); background: transparent; color: var(--text-sec); cursor: pointer; font: inherit; }
+  .pane-footer { display: flex; min-height: 38px; flex: 0 0 auto; align-items: center; justify-content: space-between; border-top: 1px solid var(--border-soft); padding: 0 var(--sp-3); color: var(--text-muted); font-size: var(--fs-xs); }
+  .pane-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pane-actions { display: flex; min-width: 0; align-items: center; gap: 2px; }
+  .pane-footer button { display: inline-flex; height: 28px; align-items: center; justify-content: center; gap: var(--sp-1); border: 1px solid transparent; border-radius: var(--radius-sm); padding: 0 var(--sp-2); background: transparent; color: var(--text-sec); cursor: pointer; font: inherit; }
   .pane-footer button:hover { border-color: var(--border); background: var(--bg-hover); color: var(--text-main); }
-  .pane-footer button.icon-action { width: 30px; justify-content: center; padding: 0; }
+  .pane-footer button.icon-action { width: 28px; padding: 0; }
   .pane-footer button.success { color: var(--success); }
-  .result-empty { display: grid; flex: 1; place-content: center; place-items: center; gap: var(--sp-3); color: var(--text-muted); font-size: var(--fs-sm); }
-  .empty-icon { display: grid; width: 52px; height: 52px; place-items: center; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-surface); color: var(--text-sec); box-shadow: var(--shadow-sm); }
+  .result-empty { display: grid; flex: 1; place-content: center; place-items: center; gap: var(--sp-2); color: var(--text-muted); font-size: var(--fs-xs); }
+  .result-empty strong { color: var(--text-sec); font-size: var(--fs-sm); font-weight: var(--fw-medium); }
+  .empty-icon { display: grid; width: 44px; height: 44px; margin-bottom: var(--sp-1); place-items: center; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-surface); color: var(--text-sec); }
   .updating { display: flex; align-items: center; gap: var(--sp-2); color: var(--primary); font-size: var(--fs-xs); }
   .updating i { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); animation: pulse 1s infinite; }
-  .compare-wrap { display: flex; min-height: 0; flex: 1; flex-direction: column; gap: var(--sp-3); padding: var(--sp-3); }
+  .compare-wrap { display: flex; min-height: 0; flex: 1; flex-direction: column; }
   @keyframes pulse { 50% { opacity: .3; } }
-  @media (max-width: 720px) { .workspace { grid-template-columns: 1fr; grid-template-rows: minmax(230px, 1fr) minmax(230px, 1fr); overflow: auto; } .credential-banner { min-height: 38px; justify-content: flex-start; padding-block: var(--sp-1); } .credential-banner span { white-space: normal; } .editor { padding: var(--sp-4); font-size: var(--fs-lg); } }
-  @media (max-width: 420px) { .credential-banner { font-size: var(--fs-xs); } .pane-footer { padding-inline: var(--sp-3); } }
+  @media (max-width: 720px) {
+    .workspace { grid-template-columns: 1fr; grid-template-rows: minmax(220px, 1fr) minmax(220px, 1fr); overflow: auto; }
+    .credential-banner { min-height: 30px; }
+    .editor { padding: var(--sp-4); }
+  }
+  @media (max-width: 460px) {
+    .credential-banner { padding-inline: var(--sp-2); }
+    .credential-banner span { white-space: nowrap; }
+    .pane-header, .pane-footer { padding-inline: var(--sp-2); }
+    .pane-label { display: none; }
+    .action-label { display: none; }
+    .pane-footer button:not(.icon-action) { width: 28px; padding: 0; }
+  }
 </style>

@@ -33,8 +33,30 @@ test("theme and settings dialogs remain keyboard accessible", async ({ page }) =
   await page.getByLabel("切换深浅主题").click();
   await expect(page.locator(".app-shell")).toHaveClass(/light-mode/);
 
-  await page.getByLabel("打开设置").click();
+  const settingsTrigger = page.getByLabel("打开设置");
+  await settingsTrigger.click();
   await expect(page.getByRole("dialog", { name: "偏好设置" })).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(page.getByRole("dialog", { name: "偏好设置" })).toBeHidden();
+  await expect(settingsTrigger).toBeFocused();
+});
+
+test("translation modes remain independent controls", async ({ page }) => {
+  await page.goto("/");
+
+  const auto = page.getByRole("button", { name: "自动翻译" });
+  const clipboard = page.getByRole("button", { name: "剪贴板监听" });
+  const compare = page.getByRole("button", { name: "多引擎对照" });
+
+  await expect(auto).toHaveAttribute("aria-pressed", "true");
+  await expect(clipboard).toHaveAttribute("aria-pressed", "false");
+  await expect(compare).toHaveAttribute("aria-pressed", "false");
+
+  await auto.click();
+  await clipboard.click();
+  await compare.click();
+
+  await expect(auto).toHaveAttribute("aria-pressed", "false");
+  await expect(clipboard).toHaveAttribute("aria-pressed", "true");
+  await expect(compare).toHaveAttribute("aria-pressed", "true");
 });

@@ -8,5 +8,9 @@ describe("standalone app", () => {
     expect(await screen.findByLabelText("应用侧边栏")).toBeInTheDocument();
     expect(screen.getByText("SimpleTranslate")).toBeInTheDocument();
     expect(screen.getByText("预览")).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "翻译语言" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "默认翻译引擎" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "自动翻译" })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.queryByRole("button", { name: "收起侧边栏" })).not.toBeInTheDocument();
   });
 });

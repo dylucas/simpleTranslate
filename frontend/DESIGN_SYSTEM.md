@@ -1,51 +1,59 @@
 # SimpleTranslate Design System
 
-The Aurora interface is a quiet desktop workspace. Neutral surfaces carry the
-layout; indigo is reserved for identity, focus, selection, and primary actions.
-The source of truth is `src/style.css`.
+SimpleTranslate is a high-density desktop translation workspace. Neutral surfaces
+carry the interface; indigo identifies the product, focus, selection, and the
+primary translation action. Semantic states always use their own colors.
 
 ## Principles
 
-- Dense and predictable: translation controls stay in fixed locations and the
-  workspace prioritizes text over decoration.
-- Token driven: components consume global colors, spacing, type, radii, motion,
-  and z-index values instead of declaring competing theme values.
-- State is visible: loading, updating, partial failure, missing credentials,
-  saved settings, and copied text each have explicit feedback.
-- Keyboard complete: every action has a focus state; dialogs trap focus, close
-  with Escape, and return focus to their trigger.
-- Responsive by constraint: editor tracks and tool groups have stable minimums;
-  the workspace stacks at 720px without horizontal overflow.
+- Text first: source and translated content receive most of the window.
+- Dense, not cramped: controls use stable compact dimensions and never resize
+  when labels, loading states, or results change.
+- One predictable workspace: navigation, language routing, engine selection,
+  modes, editors, and status always stay in the same order.
+- State is explicit: credentials, processing, partial engine failure, copied
+  text, saved settings, and empty data have distinct feedback.
+- Keyboard complete: all controls have visible focus, overlays trap focus,
+  Escape closes them, and focus returns to the trigger.
 
-## Core Tokens
+## Foundation
 
 | Group | Tokens | Rule |
 | --- | --- | --- |
-| Accent | `--primary`, `--primary-hover`, `--primary-soft` | Use only for brand, selection, focus, and primary commands |
-| Semantic | `--success`, `--warning`, `--danger`, `--info` | Never reuse accent color for semantic state |
-| Surfaces | `--bg-base`, `--bg-sidebar`, `--bg-panel`, `--bg-surface`, `--bg-elevated` | Establish hierarchy with contrast, not gradients |
-| Text | `--text-main`, `--text-sec`, `--text-muted` | Main copy, supporting copy, metadata |
-| Radius | `--radius-xs` through `--radius-lg` | Panels and dialogs never exceed 8px; pills use `--radius-full` |
+| Accent | `--primary`, `--primary-hover`, `--primary-soft` | Brand, focus, selection, and primary actions only |
+| Semantic | `--success`, `--warning`, `--danger`, `--info` | Success, attention, failure, and processing respectively |
+| Surfaces | `--bg-rail`, `--bg-workspace`, `--bg-panel`, `--bg-surface`, `--bg-elevated` | Build hierarchy with neutral contrast, never gradients |
+| Text | `--text-main`, `--text-sec`, `--text-muted` | Content, controls, and metadata |
+| Radius | `--radius-xs` through `--radius-lg` | No panel or dialog exceeds 8px |
 | Spacing | `--sp-1` through `--sp-10` | Four-pixel base grid |
-| Motion | `--t-fast`, `--t-base`, `--t-slow` | 120-260ms; reduced-motion disables nonessential animation |
+| Motion | `--t-fast`, `--t-base`, `--t-slow` | 120-240ms; reduced motion disables nonessential animation |
+
+The default theme is dark. `.light-mode` overrides the same semantic tokens.
+Components must not introduce theme-specific color branches.
 
 ## Layout
 
-- Desktop: 228px sidebar, compact header, two equal editor tracks.
-- Compact: labels collapse before controls; text tracks remain side by side.
-- Narrow (`<=720px`): 60px icon rail, two-row header, stacked source/result
-  tracks with a minimum 230px working height.
-- Status bar remains available at all widths and shows the active language
-  route and translation engine without competing with the editor content.
+- Utility rail: fixed 56px with product mark, history, theme, and settings.
+- Command bar: 52px on desktop; language route, engine, independent modes, and
+  translation action remain in one row.
+- Workspace: two full-bleed equal editor tracks separated by a 1px divider.
+- Editor headers are 42px and footers are 38px. The status bar is 26px.
+- At 720px and below, the command bar uses two rows and editors stack. The rail
+  remains fixed so navigation never changes location.
+- At 460px and below, secondary labels collapse before controls. Icon buttons
+  keep accessible names and tooltips.
 
 ## Components
 
-- Primary buttons use a solid accent fill. Broad gradients and ambient glow
-  backgrounds are not part of Aurora.
-- Repeated history and comparison results may use bordered item surfaces;
-  page sections remain unframed.
-- Icon-only controls use Lucide icons, accessible names, and tooltips.
-- Settings always edit a draft. Connection tests use that draft but never
-  persist it; only the Save command updates application configuration.
-- Dark mode is the default. `.light-mode` overrides the same semantic tokens,
-  so component CSS must not branch on theme.
+- Icon-only commands use Lucide icons, stable square dimensions, accessible
+  names, and hover/focus tooltips.
+- Engine choice is a segmented control. Auto translation, clipboard watching,
+  and comparison are independent toggle buttons.
+- Editors and page sections are unframed. Cards are reserved for repeated
+  history and engine-result items.
+- Settings use unframed sections separated by dividers. Tests operate on the
+  draft; only Save persists it.
+- History remains a right drawer. Settings remain a centered modal. Both trap
+  focus and return it when closed.
+- All text must fit at 1440x900, 1024x768, 720x800, and 390x844 without horizontal
+  page overflow or incoherent overlap.

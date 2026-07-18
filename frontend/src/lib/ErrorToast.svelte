@@ -25,7 +25,7 @@
 <style>
   .error-toast {
     position: fixed;
-    top: var(--sp-4);
+    top: var(--sp-3);
     left: 50%;
     z-index: var(--z-toast);
     display: flex;
@@ -33,14 +33,14 @@
     max-width: min(560px, calc(100vw - var(--sp-8)));
     align-items: center;
     gap: var(--sp-2);
-    padding: var(--sp-3) var(--sp-4);
+    padding: 9px var(--sp-3);
     transform: translateX(-50%);
     border: 1px solid color-mix(in srgb, var(--danger) 60%, transparent);
     border-radius: var(--radius-md);
     background: var(--danger-strong);
-    box-shadow: var(--shadow-lg);
+    box-shadow: var(--shadow-md);
     color: var(--text-inverse);
-    font-size: var(--fs-base);
+    font-size: var(--fs-sm);
   }
   .error-toast span { flex: 1; overflow-wrap: anywhere; }
   button {

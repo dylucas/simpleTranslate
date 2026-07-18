@@ -32,13 +32,13 @@
     align-items: center;
     justify-content: space-between;
     border-top: 1px solid var(--border-soft);
-    padding: 0 var(--sp-4);
-    background: var(--bg-panel);
+    padding: 0 var(--sp-3);
+    background: var(--bg-rail);
     color: var(--text-muted);
     font-size: var(--fs-xs);
   }
   .status { display: flex; align-items: center; gap: var(--sp-2); color: var(--text-sec); }
-  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
+  .status-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
   .status-dot.processing { background: var(--warning); animation: pulse 1s infinite; }
   .status-dot.error { background: var(--danger); }
   .preview-badge { border: 1px solid var(--border); border-radius: var(--radius-full); padding: 1px 6px; }
