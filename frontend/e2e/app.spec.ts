@@ -117,3 +117,20 @@ test("translation modes remain independent controls", async ({ page }) => {
   await expect(clipboard).toHaveAttribute("aria-pressed", "true");
   await expect(compare).toHaveAttribute("aria-pressed", "true");
 });
+
+test("keyboard shortcuts manage panels without conflicting with text actions", async ({ page }) => {
+  await page.goto("/");
+
+  await page.keyboard.press("ControlOrMeta+Shift+H");
+  await expect(page.getByRole("dialog", { name: "历史记录" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "搜索翻译记录" })).toBeFocused();
+
+  await page.keyboard.press("ControlOrMeta+L");
+  await expect(page.getByRole("dialog", { name: "历史记录" })).toBeHidden();
+  await expect(page.getByRole("textbox", { name: "原文" })).toBeFocused();
+
+  await page.keyboard.press("ControlOrMeta+,");
+  await expect(page.getByRole("dialog", { name: "偏好设置" })).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+,");
+  await expect(page.getByRole("dialog", { name: "偏好设置" })).toBeHidden();
+});

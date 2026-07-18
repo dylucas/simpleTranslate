@@ -5,6 +5,7 @@
   } from "@lucide/svelte";
   import { tick } from "svelte";
   import { cloneConfig, DEFAULT_CONFIG } from "./bridge";
+  import { ARIA_SHORTCUTS } from "./shortcuts";
   import type { CloudConfig, EngineId, ServiceConfig } from "./types";
 
   interface Props {
@@ -70,7 +71,12 @@
   }
 
   function handleKeydown(event: KeyboardEvent): void {
-    if (event.key === "Escape") onClose();
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      onClose();
+      return;
+    }
     if (event.key !== "Tab" || !modal) return;
     const focusable = [...modal.querySelectorAll<HTMLElement>("button:not(:disabled), input, select")];
     if (!focusable.length) return;
@@ -91,7 +97,7 @@
   <div class="modal" bind:this={modal} role="dialog" aria-modal="true" aria-labelledby="config-title" tabindex="-1" onkeydown={handleKeydown}>
     <header>
       <div class="title"><span><Settings size={20} /></span><div><h2 id="config-title">偏好设置</h2><small>翻译服务与工作区偏好</small></div></div>
-      <button class="icon-btn" onclick={onClose} aria-label="关闭偏好设置"><X size={18} /></button>
+      <button class="icon-btn" onclick={onClose} aria-label="关闭偏好设置" aria-keyshortcuts={ARIA_SHORTCUTS.closePanel}><X size={18} /></button>
     </header>
 
     <main>

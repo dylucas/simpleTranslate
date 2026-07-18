@@ -92,6 +92,7 @@ SimpleTranslate 是一个基于 Wails 框架开发的桌面翻译应用。后端
    - **Ctrl/Cmd + K**: 清空输入内容
    - **Ctrl/Cmd + J**: 交换源语言和目标语言
    - **Ctrl/Cmd + Shift + H**: 打开 / 关闭历史记录面板
+   - **Ctrl/Cmd + ,**: 打开 / 关闭偏好设置
    - **Ctrl/Cmd + M**: 切换深色 / 浅色主题
    - **Esc**: 关闭弹窗 / 面板
 

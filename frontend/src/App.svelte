@@ -5,7 +5,7 @@
   import { createClipboardWatcher } from "./lib/clipboard";
   import { createConfigController } from "./lib/configController";
   import { langs, getSpeechLang } from "./lib/languages";
-  import { createShortcutHandler } from "./lib/shortcuts";
+  import { ARIA_SHORTCUTS, createShortcutHandler } from "./lib/shortcuts";
   import { createSpeaker } from "./lib/speech";
   import { createTranslateController, type TranslateController } from "./lib/translateController";
   import type { EngineId, HistoryEntry } from "./lib/types";
@@ -202,18 +202,26 @@
     }, 0);
   }
 
+  function focusInputFromShortcut(): void {
+    showConfig = false;
+    showHistory = false;
+    void tick().then(() => inputElement?.focus());
+  }
+
   const shortcuts = createShortcutHandler({
     onTranslate: requestTranslation,
-    onFocusInput: () => inputElement?.focus(),
+    onFocusInput: focusInputFromShortcut,
     onClearInput: () => (input = ""),
     onSwapLangs: swapLanguages,
     onToggleHistory: () => showHistory ? closePanels() : openPanel("history"),
+    onToggleSettings: () => showConfig ? closePanels() : openPanel("config"),
     onToggleTheme: () => void configController.patch("isDark", !config.isDark),
     onClosePanel: closePanels,
+  }, {
+    isPanelOpen: () => showConfig || showHistory,
   });
 
   function handleGlobalKeydown(event: KeyboardEvent): void {
-    if ((showConfig || showHistory) && event.key !== "Escape") return;
     shortcuts(event);
   }
 
@@ -277,13 +285,13 @@
           <div class="pane-title"><span class="pane-icon"><TextCursorInput size={14} /></span><span class="pane-label">输入</span><h2 id="source-title">原文</h2></div>
           <span class="char-count">{input.length} 字符</span>
         </header>
-        <textarea class="editor" bind:this={inputElement} bind:value={input} placeholder="输入要翻译的文本" aria-label="原文" spellcheck="false"></textarea>
+        <textarea class="editor" bind:this={inputElement} bind:value={input} placeholder="输入要翻译的文本" aria-label="原文" aria-keyshortcuts={ARIA_SHORTCUTS.focusInput} spellcheck="false"></textarea>
         <footer class="pane-footer">
           <span class="pane-note">{config.autoTranslate ? "自动翻译" : "手动翻译"}</span>
           <div class="pane-actions">
             {#if input}
               <button class="icon-action" onclick={() => speak(input, source === "auto" ? (translation.lastDetectedLang || "en") : source)} aria-label="朗读原文" title="朗读原文">{#if speakingText === input}<Square size={13} />{:else}<Volume2 size={14} />{/if}</button>
-              <button class="icon-action" onclick={() => (input = "")} aria-label="清空原文" title="清空原文"><X size={14} /></button>
+              <button class="icon-action" onclick={() => (input = "")} aria-label="清空原文" aria-keyshortcuts={ARIA_SHORTCUTS.clearInput} title="清空原文"><X size={14} /></button>
             {/if}
           </div>
         </footer>

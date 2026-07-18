@@ -1,17 +1,13 @@
-// 全局快捷键分发器：将按键事件按 modifier+key 映射到回调。
-// 与组件状态解耦，App.svelte 只需注入 handlers 对象即可。
-//
-// 使用方式：
-//   const handler = createShortcutHandler({
-//     onTranslate: () => translate(),
-//     onFocusInput: () => inputEl?.focus(),
-//     onClearInput: () => (input = ""),
-//     onSwapLangs: () => ([source, target] = [target, source]),
-//     onToggleHistory: () => (showHistory = !showHistory),
-//     onToggleTheme: () => updateAndSaveConfig("isDark", !$configStore.isDark),
-//     onClosePanel: () => { if (showHistory) showHistory = false; },
-//   });
-//   <svelte:window on:keydown={handler} />
+export const ARIA_SHORTCUTS = {
+  translate: "Control+Enter Meta+Enter",
+  focusInput: "Control+L Meta+L",
+  clearInput: "Control+K Meta+K",
+  swapLanguages: "Control+J Meta+J",
+  toggleHistory: "Control+Shift+H Meta+Shift+H",
+  toggleSettings: "Control+, Meta+,",
+  toggleTheme: "Control+M Meta+M",
+  closePanel: "Escape",
+} as const;
 
 export interface ShortcutHandlers {
   onTranslate?: () => void;
@@ -19,62 +15,70 @@ export interface ShortcutHandlers {
   onClearInput?: () => void;
   onSwapLangs?: () => void;
   onToggleHistory?: () => void;
+  onToggleSettings?: () => void;
   onToggleTheme?: () => void;
   onClosePanel?: () => void;
 }
 
-// isMod 检测 Ctrl/Cmd 修饰键（macOS 用 Cmd，其他平台用 Ctrl）
-function isMod(e: KeyboardEvent): boolean {
-  return e.ctrlKey || e.metaKey;
+export interface ShortcutOptions {
+  isPanelOpen?: () => boolean;
 }
 
-// keyMatches 同时匹配大小写形式（避免 caps lock 影响）
-function keyMatches(e: KeyboardEvent, key: string): boolean {
-  const lower = e.key.toLowerCase();
-  return lower === key.toLowerCase();
+function isMod(event: KeyboardEvent): boolean {
+  return event.ctrlKey || event.metaKey;
 }
 
-export function createShortcutHandler(handlers: ShortcutHandlers) {
-  return function handleKeydown(e: KeyboardEvent): void {
-    // Ctrl/Cmd + Enter：发送翻译
-    if (isMod(e) && e.key === "Enter") {
-      e.preventDefault();
-      handlers.onTranslate?.();
+function keyMatches(event: KeyboardEvent, key: string): boolean {
+  return event.key.toLowerCase() === key.toLowerCase();
+}
+
+function hasModifiers(event: KeyboardEvent, shift = false): boolean {
+  return isMod(event) && event.shiftKey === shift && !event.altKey;
+}
+
+function shouldIgnore(event: KeyboardEvent): boolean {
+  return event.defaultPrevented || event.repeat || event.isComposing || event.keyCode === 229;
+}
+
+export function createShortcutHandler(handlers: ShortcutHandlers, options: ShortcutOptions = {}) {
+  return function handleKeydown(event: KeyboardEvent): void {
+    if (shouldIgnore(event)) return;
+
+    const panelOpen = options.isPanelOpen?.() ?? false;
+    const invoke = (handler: (() => void) | undefined, allowWhenPanelOpen = false): void => {
+      if (!handler || (panelOpen && !allowWhenPanelOpen)) return;
+      event.preventDefault();
+      handler();
+    };
+
+    if (hasModifiers(event) && event.key === "Enter") {
+      invoke(handlers.onTranslate);
       return;
     }
-    // Ctrl/Cmd + L：聚焦输入
-    if (isMod(e) && keyMatches(e, "l")) {
-      e.preventDefault();
-      handlers.onFocusInput?.();
+    if (hasModifiers(event) && keyMatches(event, "l")) {
+      invoke(handlers.onFocusInput, true);
       return;
     }
-    // Ctrl/Cmd + K：清空输入
-    if (isMod(e) && keyMatches(e, "k")) {
-      e.preventDefault();
-      handlers.onClearInput?.();
+    if (hasModifiers(event) && keyMatches(event, "k")) {
+      invoke(handlers.onClearInput);
       return;
     }
-    // Ctrl/Cmd + J：交换源/目标
-    if (isMod(e) && keyMatches(e, "j")) {
-      e.preventDefault();
-      handlers.onSwapLangs?.();
+    if (hasModifiers(event) && keyMatches(event, "j")) {
+      invoke(handlers.onSwapLangs);
       return;
     }
-    // Ctrl/Cmd + Shift + H：切换历史面板
-    if (isMod(e) && e.shiftKey && keyMatches(e, "h")) {
-      e.preventDefault();
-      handlers.onToggleHistory?.();
+    if (hasModifiers(event, true) && keyMatches(event, "h")) {
+      invoke(handlers.onToggleHistory, true);
       return;
     }
-    // Ctrl/Cmd + M：切换主题
-    if (isMod(e) && keyMatches(e, "m")) {
-      e.preventDefault();
-      handlers.onToggleTheme?.();
+    if (hasModifiers(event) && keyMatches(event, ",")) {
+      invoke(handlers.onToggleSettings, true);
       return;
     }
-    // Esc：关闭面板
-    if (e.key === "Escape") {
-      handlers.onClosePanel?.();
+    if (hasModifiers(event) && keyMatches(event, "m")) {
+      invoke(handlers.onToggleTheme, true);
+      return;
     }
+    if (event.key === "Escape" && panelOpen) invoke(handlers.onClosePanel, true);
   };
 }

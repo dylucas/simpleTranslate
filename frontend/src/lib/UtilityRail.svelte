@@ -1,5 +1,6 @@
 <script lang="ts">
   import { History, Languages, Moon, Settings, Sun } from "@lucide/svelte";
+  import { ARIA_SHORTCUTS } from "./shortcuts";
 
   interface Props {
     activePanel: "config" | "history" | null;
@@ -24,6 +25,7 @@
       class="rail-action"
       onclick={onHistory}
       aria-label="打开历史记录"
+      aria-keyshortcuts={ARIA_SHORTCUTS.toggleHistory}
       aria-pressed={activePanel === "history"}
       data-tooltip="历史记录"
     >
@@ -32,7 +34,7 @@
   </nav>
 
   <footer>
-    <button class="rail-action" onclick={onTheme} aria-label="切换深浅主题" data-tooltip={isDark ? "切换到浅色" : "切换到深色"}>
+    <button class="rail-action" onclick={onTheme} aria-label="切换深浅主题" aria-keyshortcuts={ARIA_SHORTCUTS.toggleTheme} data-tooltip={isDark ? "切换到浅色" : "切换到深色"}>
       {#if isDark}<Sun size={18} />{:else}<Moon size={18} />{/if}
     </button>
     <button
@@ -40,6 +42,7 @@
       class="rail-action"
       onclick={onSettings}
       aria-label="打开设置"
+      aria-keyshortcuts={ARIA_SHORTCUTS.toggleSettings}
       aria-pressed={activePanel === "config"}
       data-tooltip="偏好设置"
     >

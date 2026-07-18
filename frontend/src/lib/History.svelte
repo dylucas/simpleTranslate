@@ -2,6 +2,7 @@
   import { AlertTriangle, ArrowRight, Download, History as HistoryIcon, Search, Trash2, X } from "@lucide/svelte";
   import { tick } from "svelte";
   import { langs } from "./languages";
+  import { ARIA_SHORTCUTS } from "./shortcuts";
   import type { HistoryEntry } from "./types";
 
   interface Props {
@@ -108,7 +109,7 @@
       <div class="header-actions">
         <button onclick={exportHistory} disabled={!history.length} aria-label="导出历史记录" title="导出 JSON"><Download size={16} /></button>
         <button bind:this={clearHistoryButton} class="danger" onclick={() => (confirming = true)} disabled={!history.length} aria-label="清空历史记录" title="清空历史"><Trash2 size={16} /></button>
-        <button onclick={close} aria-label="关闭历史记录" title="关闭"><X size={18} /></button>
+        <button onclick={close} aria-label="关闭历史记录" aria-keyshortcuts={ARIA_SHORTCUTS.closePanel} title="关闭"><X size={18} /></button>
       </div>
     </header>
 
