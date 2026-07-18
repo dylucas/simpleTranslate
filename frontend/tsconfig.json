@@ -1,18 +1,16 @@
 {
   "extends": "./node_modules/@tsconfig/svelte/tsconfig.json",
   "compilerOptions": {
-    "target": "ESNext",
+    "target": "ES2022",
     "useDefineForClassFields": true,
     "module": "ESNext",
     "resolveJsonModule": true,
-    "allowJs": true,
-    "checkJs": true,
+    "allowJs": false,
     "isolatedModules": true,
-    "moduleResolution": "node",
+    "moduleResolution": "bundler",
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "strict": false,
-    "noImplicitAny": false,
+    "strict": true,
     "baseUrl": ".",
     "paths": {
       "*": ["./node_modules/*"]
@@ -22,7 +20,6 @@
   },
   "include": [
     "src/**/*.ts",
-    "src/**/*.js",
     "src/**/*.svelte",
     "wailsjs/**/*.ts"
   ],

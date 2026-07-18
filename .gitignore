@@ -2,5 +2,7 @@ build/bin
 node_modules
 frontend/dist
 frontend/wailsjs
+frontend/test-results
+frontend/playwright-report
 .vscode
 .DS_Store

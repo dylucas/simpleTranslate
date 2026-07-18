@@ -1,6 +1,7 @@
 package main
 
 import (
+	"path/filepath"
 	"simpleTranslate/config"
 )
 
@@ -12,7 +13,7 @@ type ServiceConfig = config.ServiceConfig
 
 // getConfigPath 返回配置文件路径（App 方法包装）。
 func (a *App) getConfigPath() string {
-	return config.GetConfigPath()
+	return filepath.Join(a.dataDir, "config.json")
 }
 
 // GetConfig 提供给前端调用：读取配置

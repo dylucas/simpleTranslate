@@ -7,15 +7,15 @@ import (
 	"testing"
 )
 
-// TestGetConfig_MissingFile 文件不存在时返回零值配置且无错误
+// TestGetConfig_MissingFile 文件不存在时返回默认配置且无错误
 func TestGetConfig_MissingFile(t *testing.T) {
 	InvalidateCache()
 	cfg, err := GetConfig("/tmp/definitely_not_exists_simpleTranslate.json")
 	if err != nil {
 		t.Fatalf("期望 nil 错误，得到 %v", err)
 	}
-	if cfg.DefaultEngine != "" || cfg.IsDark {
-		t.Errorf("期望零值配置，得到 %+v", cfg)
+	if !reflect.DeepEqual(cfg, DefaultCloudConfig()) {
+		t.Errorf("期望默认配置，得到 %+v", cfg)
 	}
 }
 
@@ -33,6 +33,7 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 		CompareMode:    true,
 		CompareEngines: []string{"tencent", "aliyun"},
 	}
+	want = normalizeConfig(want)
 
 	if err := SaveConfig(path, want); err != nil {
 		t.Fatalf("SaveConfig 失败: %v", err)
@@ -87,8 +88,8 @@ func TestGetConfig_InvalidJSON(t *testing.T) {
 	if err == nil {
 		t.Error("损坏 JSON 期望返回错误，得到 nil")
 	}
-	if cfg.DefaultEngine != "" {
-		t.Errorf("损坏 JSON 应返回零值，得到 %+v", cfg)
+	if !reflect.DeepEqual(cfg, DefaultCloudConfig()) {
+		t.Errorf("损坏 JSON 应返回默认配置，得到 %+v", cfg)
 	}
 }
 
@@ -98,7 +99,7 @@ func TestGetConfig_CacheHit(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.json")
 
-	want := CloudConfig{DefaultEngine: "aliyun", IsDark: true}
+	want := normalizeConfig(CloudConfig{DefaultEngine: "aliyun", IsDark: true})
 	if err := SaveConfig(path, want); err != nil {
 		t.Fatalf("SaveConfig 失败: %v", err)
 	}
@@ -122,6 +123,34 @@ func TestGetConfig_CacheHit(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got2, want) {
 		t.Errorf("缓存读取不一致: got=%+v", got2)
+	}
+}
+
+func TestGetConfig_MigratesLegacyFields(t *testing.T) {
+	InvalidateCache()
+	path := filepath.Join(t.TempDir(), "config.json")
+	legacy := `{
+		"tencent":{"secretKey":"keep-me"},
+		"defaultEngine":"aliyun",
+		"isDark":false,
+		"compareEngines":["aliyun"]
+	}`
+	if err := os.WriteFile(path, []byte(legacy), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := GetConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Version != CurrentVersion || cfg.Tencent.SecretKey != "keep-me" {
+		t.Fatalf("legacy credentials were not preserved: %+v", cfg)
+	}
+	if cfg.AutoTranslate != true || cfg.SourceLanguage != "auto" || cfg.TargetLanguage != "zh" {
+		t.Fatalf("new defaults were not migrated: %+v", cfg)
+	}
+	if cfg.IsDark {
+		t.Fatal("an explicit legacy isDark=false must be preserved")
 	}
 }
 

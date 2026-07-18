@@ -9,7 +9,7 @@ import (
 // TestSaveConfig_ClearsCache 保存配置后应清空翻译/识别缓存
 // 凭据变更后旧缓存结果不再有效，必须失效
 func TestSaveConfig_ClearsCache(t *testing.T) {
-	app := NewApp()
+	app := NewAppWithDataDir(t.TempDir())
 	// 预填缓存
 	app.translateCache.set("aliyun|en|zh|hello", "你好")
 	app.detectCache.set("aliyun|hello", "en")
@@ -20,10 +20,6 @@ func TestSaveConfig_ClearsCache(t *testing.T) {
 	// 保存配置应清空缓存
 	path := app.getConfigPath()
 	orig, _ := config.GetConfig(path)
-	defer func() {
-		_ = config.SaveConfig(path, orig)
-		config.InvalidateCache()
-	}()
 
 	if err := app.SaveConfig(orig); err != nil {
 		t.Fatalf("SaveConfig 失败: %v", err)
@@ -38,7 +34,7 @@ func TestSaveConfig_ClearsCache(t *testing.T) {
 
 // TestNewApp_InitializesCache NewApp 应初始化非 nil 的缓存
 func TestNewApp_InitializesCache(t *testing.T) {
-	app := NewApp()
+	app := NewAppWithDataDir(t.TempDir())
 	if app.translateCache == nil {
 		t.Error("translateCache 不应为 nil")
 	}

@@ -66,6 +66,14 @@ func chatCompletion(prompt string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return chatCompletionWithAPIKey(prompt, apiKey)
+}
+
+func chatCompletionWithConfig(prompt string, service config.ServiceConfig) (string, error) {
+	return chatCompletionWithAPIKey(prompt, strings.TrimSpace(service.SecretKey))
+}
+
+func chatCompletionWithAPIKey(prompt, apiKey string) (string, error) {
 	if apiKey == "" {
 		return "", fmt.Errorf("未配置腾讯混元 API Key，请在设置中填写")
 	}
@@ -148,6 +156,16 @@ func normalizeLangCode(raw string) string {
 
 // DetectLanguage 使用 hy-mt2-pro 识别语种，返回前端约定的语言代码
 func DetectLanguage(text string) (string, error) {
+	return detectLanguage(text, chatCompletion)
+}
+
+func DetectLanguageWithConfig(text string, service config.ServiceConfig) (string, error) {
+	return detectLanguage(text, func(prompt string) (string, error) {
+		return chatCompletionWithConfig(prompt, service)
+	})
+}
+
+func detectLanguage(text string, complete func(string) (string, error)) (string, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return "", fmt.Errorf("空文本")
@@ -156,7 +174,7 @@ func DetectLanguage(text string) (string, error) {
 		"请只回复以下文本对应的语言代码（只能从 zh/en/jp/kr/fr/de/ru/es 中选择一个，不要输出任何其他内容、不要标点）：\n%s",
 		text,
 	)
-	out, err := chatCompletion(prompt)
+	out, err := complete(prompt)
 	if err != nil {
 		return "", err
 	}
@@ -165,6 +183,16 @@ func DetectLanguage(text string) (string, error) {
 
 // Translate 使用 hy-mt2-pro 翻译
 func Translate(text, source, target string) (string, error) {
+	return translateText(text, source, target, chatCompletion)
+}
+
+func TranslateWithConfig(text, source, target string, service config.ServiceConfig) (string, error) {
+	return translateText(text, source, target, func(prompt string) (string, error) {
+		return chatCompletionWithConfig(prompt, service)
+	})
+}
+
+func translateText(text, source, target string, complete func(string) (string, error)) (string, error) {
 	targetName, ok := langCodeToName[target]
 	if !ok {
 		targetName = target
@@ -173,5 +201,5 @@ func Translate(text, source, target string) (string, error) {
 		"将以下文本翻译为 %s，注意只需要输出翻译后的结果，不要额外解释：\n%s",
 		targetName, text,
 	)
-	return chatCompletion(prompt)
+	return complete(prompt)
 }

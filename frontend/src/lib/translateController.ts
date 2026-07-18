@@ -1,78 +1,62 @@
-// 翻译控制器：封装翻译流程的状态与逻辑，与组件解耦。
-//
-// 持有所有翻译相关状态（isProcessing/status/output/compareOutputs/errorToast 等），
-// 通过依赖注入读取宿主组件的输入文本、语言对、引擎配置，
-// 通过回调通知宿主更新历史记录与目标语言。
-//
-// 使用方式：
-//   const ctrl = createTranslateController({
-//     getInput: () => input,
-//     getSource: () => source,
-//     getTarget: () => target,
-//     getActiveEngine: () => activeEngine,
-//     getCompareMode: () => compareMode,
-//     getCompareEngines: () => compareEngines,
-//     getHistory: () => history,
-//     setHistory: (updater) => { history = updater(history); },
-//     setTarget: (t) => { target = t; },
-//   });
-//   $: state = $ctrl.state;
-//   await ctrl.translate();
-
-import { writable, get, type Writable } from "svelte/store";
-import { TranslateText, TranslateMulti } from "../../wailsjs/go/main/App";
-import { EventsOn } from "../../wailsjs/runtime/runtime";
-import { formatAutoDetect, DEFAULT_COMPARE_ENGINES } from "./languages";
+import { get, writable, type Writable } from "svelte/store";
+import type { DesktopBridge } from "./bridge";
+import { formatAutoDetect } from "./languages";
+import { createHistoryEntry, isDuplicateRecent, prependHistory } from "./history";
 import {
-  isDuplicateRecent,
-  createHistoryEntry,
-  prependHistory,
-  HISTORY_LIMIT,
-} from "./history";
-import {
+  ErrorCodes,
   formatErrorToToast,
   isRetryable,
   shouldShowSettingsButton,
-  ErrorCodes,
+  type AnyErrorInput,
 } from "./errors";
 import type {
-  HistoryEntry,
+  EngineId,
   EngineTranslateResult,
   ErrorToast,
+  HistoryEntry,
   TranslateErrorCode,
 } from "./types";
 
-// 翻译状态集合：所有由翻译流程驱动、UI 消费的状态
 export interface TranslationState {
   isProcessing: boolean;
   status: string;
   output: string;
-  compareOutputs: Record<string, EngineTranslateResult>;
-  compareLoadingEngines: Record<string, boolean>;
+  compareOutputs: Partial<Record<EngineId, EngineTranslateResult>>;
+  compareLoadingEngines: Partial<Record<EngineId, boolean>>;
   errorToast: ErrorToast | null;
   autoDetectLang: string;
   lastDetectedLang: string;
+  activeRequestId: string;
 }
 
-// 宿主组件需提供的依赖：读取输入状态 + 回写历史/目标语言
 export interface TranslateControllerDeps {
+  bridge: DesktopBridge;
   getInput: () => string;
   getSource: () => string;
   getTarget: () => string;
-  getActiveEngine: () => string;
+  getActiveEngine: () => EngineId;
   getCompareMode: () => boolean;
-  getCompareEngines: () => string[];
+  getCompareEngines: () => EngineId[];
   getHistory: () => HistoryEntry[];
-  setHistory: (updater: (h: HistoryEntry[]) => HistoryEntry[]) => void;
-  setTarget: (t: string) => void;
+  setHistory: (updater: (history: HistoryEntry[]) => HistoryEntry[]) => void;
+  setTarget: (target: string) => void;
 }
 
-// 自动翻译防抖延迟
-const AUTO_TRANSLATE_DELAY = 700;
-// 错误提示自动消失延迟
-const ERROR_TOAST_DURATION = 4000;
+export interface TranslateController {
+  state: Writable<TranslationState>;
+  translate(): Promise<void>;
+  handleAutoTranslate(value: string): void;
+  showError(error: unknown): void;
+  dismissError(): void;
+  retry(): void;
+  setOutput(output: string): void;
+  restore(entry: HistoryEntry): void;
+  destroy(): void;
+}
 
-// 初始状态
+const AUTO_TRANSLATE_DELAY = 700;
+const ERROR_TOAST_DURATION = 5000;
+
 function initialState(): TranslationState {
   return {
     isProcessing: false,
@@ -83,44 +67,45 @@ function initialState(): TranslationState {
     errorToast: null,
     autoDetectLang: "自动识别",
     lastDetectedLang: "",
+    activeRequestId: "",
   };
 }
 
-export interface TranslateController {
-  state: Writable<TranslationState>;
-  translate: () => Promise<void>;
-  handleAutoTranslate: (val: string) => void;
-  showError: (err: unknown) => void;
-  dismissError: () => void;
-  retry: () => void;
-  destroy: () => void;
+function asErrorInput(error: unknown): AnyErrorInput {
+  if (typeof error === "string" || error instanceof Error || error == null) return error;
+  if (typeof error === "object") {
+    const value = error as { error?: unknown; errorCode?: unknown };
+    return {
+      error: typeof value.error === "string" ? value.error : undefined,
+      errorCode: typeof value.errorCode === "string" ? value.errorCode : undefined,
+    };
+  }
+  return undefined;
 }
 
-// createTranslateController 构造翻译控制器实例。
-// 内部订阅 translate:engine-result 事件实现逐引擎流式渲染，
-// 在 destroy() 时取消订阅并清理定时器。
-export function createTranslateController(
-  deps: TranslateControllerDeps
-): TranslateController {
-  const state = writable<TranslationState>(initialState());
+function errorCode(error: AnyErrorInput): TranslateErrorCode {
+  if (error && typeof error === "object" && "errorCode" in error) {
+    const code = error.errorCode;
+    if (typeof code === "string") return code as TranslateErrorCode;
+  }
+  return ErrorCodes.Unknown;
+}
 
-  // 请求序列号与重试标记：用于丢弃过期响应、在途请求期间输入变化自动重试
-  let translateSeq = 0;
+export function createTranslateController(deps: TranslateControllerDeps): TranslateController {
+  const state = writable<TranslationState>(initialState());
+  let requestSequence = 0;
   let pendingRetry = false;
   let lastTranslatedInput = "";
   let autoTimer: ReturnType<typeof setTimeout> | null = null;
   let errorTimer: ReturnType<typeof setTimeout> | null = null;
 
-  // showError 展示错误提示，4 秒后自动消失。支持结构化错误与字符串。
-  function showError(err: unknown): void {
-    const msg = formatErrorToToast(err as any);
-    const code: TranslateErrorCode =
-      err && typeof err === "object" && "errorCode" in err
-        ? ((err as any).errorCode as TranslateErrorCode) || ErrorCodes.Unknown
-        : ErrorCodes.Unknown;
+  function showError(error: unknown): void {
+    const input = asErrorInput(error);
+    const code = errorCode(input);
+    const msg = formatErrorToToast(input);
     if (errorTimer) clearTimeout(errorTimer);
-    state.update((s) => ({
-      ...s,
+    state.update((current) => ({
+      ...current,
       errorToast: {
         msg,
         code,
@@ -129,250 +114,172 @@ export function createTranslateController(
         ts: Date.now(),
       },
     }));
-    errorTimer = setTimeout(() => {
-      state.update((s) =>
-        s.errorToast && s.errorToast.msg === msg
-          ? { ...s, errorToast: null }
-          : s
-      );
-    }, ERROR_TOAST_DURATION);
+    errorTimer = setTimeout(() => dismissError(), ERROR_TOAST_DURATION);
   }
 
   function dismissError(): void {
     if (errorTimer) clearTimeout(errorTimer);
-    state.update((s) => ({ ...s, errorToast: null }));
+    errorTimer = null;
+    state.update((current) => ({ ...current, errorToast: null }));
   }
 
-  // addHistory 去重后 prepend，通过宿主回调写入
-  function addHistory(
-    inputText: string,
-    outputText: string,
-    src: string,
-    tgt: string
-  ): void {
-    const history = deps.getHistory();
-    if (isDuplicateRecent(history, inputText, src, tgt)) return;
-    const entry = createHistoryEntry({
-      input: inputText,
-      output: outputText,
-      source: src,
-      target: tgt,
-    });
-    deps.setHistory((h) => prependHistory(h, entry, HISTORY_LIMIT));
+  function addHistory(input: string, output: string, source: string, target: string): void {
+    if (!output || isDuplicateRecent(deps.getHistory(), input, source, target)) return;
+    const entry = createHistoryEntry({ input, output, source, target });
+    deps.setHistory((history) => prependHistory(history, entry));
   }
 
-  // 订阅逐引擎完成事件：仅处理仍在 loading 的引擎，过期事件忽略
-  const unsubscribeEngineResult = EventsOn(
-    "translate:engine-result",
-    (payload: EngineTranslateResult) => {
-      if (!payload || !payload.engine) return;
-      const cur = get(state);
-      if (!cur.compareLoadingEngines[payload.engine]) return;
-      state.update((s) => ({
-        ...s,
-        compareOutputs: {
-          ...s.compareOutputs,
-          [payload.engine]: {
-            engine: payload.engine,
-            text: payload.text || "",
-            error: payload.error,
-            errorCode: payload.errorCode as TranslateErrorCode | undefined,
-          },
-        },
-        compareLoadingEngines: {
-          ...s.compareLoadingEngines,
-          [payload.engine]: false,
-        },
-      }));
-    }
-  );
+  const unsubscribeEngineResult = deps.bridge.onEngineResult((payload) => {
+    const current = get(state);
+    if (!payload?.engine || payload.requestId !== current.activeRequestId) return;
+    if (!current.compareLoadingEngines[payload.engine]) return;
+    state.update((value) => ({
+      ...value,
+      compareOutputs: { ...value.compareOutputs, [payload.engine]: payload },
+      compareLoadingEngines: { ...value.compareLoadingEngines, [payload.engine]: false },
+    }));
+  });
 
   async function translate(): Promise<void> {
     const input = deps.getInput();
     if (!input.trim()) return;
-
-    const cur = get(state);
-    // 已有请求在途：标记需重试
-    if (cur.isProcessing) {
+    if (autoTimer) {
+      clearTimeout(autoTimer);
+      autoTimer = null;
+    }
+    if (get(state).isProcessing) {
       pendingRetry = true;
       return;
     }
 
-    // 捕获本次请求快照，用于响应返回时判断是否过期
-    const seq = ++translateSeq;
-    const reqInput = input;
-    const reqSource = deps.getSource();
-    const reqTarget = deps.getTarget();
-    const reqCompare = deps.getCompareMode();
-    lastTranslatedInput = reqInput;
+    const requestId = `${Date.now()}-${++requestSequence}`;
+    const source = deps.getSource();
+    const target = deps.getTarget();
+    const compareMode = deps.getCompareMode();
+    const engines = deps.getCompareEngines();
+    lastTranslatedInput = input;
     pendingRetry = false;
 
-    state.update((s) => ({ ...s, isProcessing: true, status: "翻译中..." }));
+    state.update((current) => ({
+      ...current,
+      isProcessing: true,
+      status: "翻译中...",
+      activeRequestId: requestId,
+      compareLoadingEngines: compareMode
+        ? Object.fromEntries(engines.map((engine) => [engine, true]))
+        : {},
+      compareOutputs: compareMode ? {} : current.compareOutputs,
+    }));
 
     try {
-      let res: any;
-      const engines = reqCompare
-        ? Array.isArray(deps.getCompareEngines())
-          ? deps.getCompareEngines()
-          : [...DEFAULT_COMPARE_ENGINES]
-        : [];
+      if (compareMode) {
+        const response = await deps.bridge.translateMulti({
+          requestId,
+          text: input,
+          source,
+          target,
+          engines,
+        });
+        if (response.requestId !== get(state).activeRequestId) return;
+        const results = response.results ?? {};
+        const values = Object.values(results);
+        const failed = values.filter((result) => result?.error || result?.errorCode);
+        const preferred = results[deps.getActiveEngine()];
+        const firstSuccess = values.find((result) => result?.text && !result.error);
+        const output = preferred?.text || firstSuccess?.text || get(state).output;
 
-      if (reqCompare) {
-        // 初始化逐引擎 loading，清空旧结果
-        state.update((s) => ({
-          ...s,
-          compareLoadingEngines: engines.reduce(
-            (acc: Record<string, boolean>, e: string) => ({
-              ...acc,
-              [e]: true,
-            }),
-            {}
-          ),
-          compareOutputs: engines.reduce(
-            (acc: Record<string, EngineTranslateResult>, e: string) => ({
-              ...acc,
-              [e]: { engine: e, text: "" },
-            }),
-            {}
-          ),
-        }));
-        res = await TranslateMulti(reqInput, reqSource, reqTarget, engines);
-      } else {
-        res = await TranslateText(
-          reqInput,
-          reqSource,
-          reqTarget,
-          deps.getActiveEngine()
-        );
-      }
-
-      // 丢弃过期响应
-      if (seq !== translateSeq) return;
-
-      if (reqCompare) {
-        const results =
-          (res.results as Record<string, EngineTranslateResult>) || {};
-        // 用最终返回值兜底覆盖（事件可能尚未到达），清空所有 loading
-        state.update((s) => ({
-          ...s,
+        state.update((current) => ({
+          ...current,
+          output,
           compareOutputs: results,
-          compareLoadingEngines: engines.reduce(
-            (acc: Record<string, boolean>, e: string) => ({
-              ...acc,
-              [e]: false,
-            }),
-            {}
-          ),
+          compareLoadingEngines: {},
+          status: failed.length === values.length ? "翻译失败" : failed.length ? "部分引擎失败" : "完成",
         }));
+        if (failed.length === values.length && failed[0]) showError(failed[0]);
+        else addHistory(input, output, source, response.target || target);
 
-        const allErrored =
-          Object.keys(results).length > 0 &&
-          Object.values(results).every((r) => r.errorCode || r.error);
-        const anyErrored = Object.values(results).some(
-          (r) => r.errorCode || r.error
-        );
-        const preferredEngine = deps.getActiveEngine() || engines[0];
-        const output = results?.[preferredEngine]?.text || "";
-
-        if (allErrored) {
-          const firstErr =
-            Object.values(results).find((r) => r.errorCode || r.error) || res;
-          state.update((s) => ({
-            ...s,
-            output,
-            status: "翻译失败",
+        if (source === "auto" && response.autoSrc) {
+          state.update((current) => ({
+            ...current,
+            lastDetectedLang: response.autoSrc,
+            autoDetectLang: formatAutoDetect(response.autoSrc),
           }));
-          showError(firstErr);
-        } else {
-          state.update((s) => ({
-            ...s,
-            output,
-            status: anyErrored ? "部分引擎失败" : "完成",
-          }));
-          addHistory(reqInput, output, reqSource, deps.getTarget());
         }
       } else {
-        if (res.errorCode) {
-          state.update((s) => ({
-            ...s,
-            output: "",
-            compareOutputs: {},
-            status: "翻译失败",
-          }));
-          showError(res);
+        const response = await deps.bridge.translateText({
+          requestId,
+          text: input,
+          source,
+          target,
+          engine: deps.getActiveEngine(),
+        });
+        if (response.requestId !== get(state).activeRequestId) return;
+        if (response.errorCode || response.error) {
+          state.update((current) => ({ ...current, status: "翻译失败" }));
+          showError(response);
         } else {
-          // 仅当用户未在请求期间手动改 target 时，同步后端兜底后的 target
-          if (reqTarget === deps.getTarget()) {
-            deps.setTarget(res.target || reqTarget);
-          }
-          state.update((s) => ({
-            ...s,
-            output: res.text,
+          deps.setTarget(response.target || target);
+          state.update((current) => ({
+            ...current,
+            output: response.text,
             compareOutputs: {},
             status: "完成",
           }));
-          addHistory(reqInput, res.text, reqSource, deps.getTarget());
+          addHistory(input, response.text, source, response.target || target);
+          if (source === "auto" && response.autoSrc) {
+            state.update((current) => ({
+              ...current,
+              lastDetectedLang: response.autoSrc,
+              autoDetectLang: formatAutoDetect(response.autoSrc),
+            }));
+          }
         }
       }
-
-      // auto 模式下同步后端识别到的语种（单引擎与对照统一处理）
-      if (reqSource === "auto") {
-        const autoSrc = (res.autoSrc as string) || "";
-        const hasError = reqCompare
-          ? false // 对照模式部分成功也算识别成功
-          : !!res.errorCode;
-        if (autoSrc && !hasError) {
-          state.update((s) => ({
-            ...s,
-            lastDetectedLang: autoSrc,
-            autoDetectLang: formatAutoDetect(autoSrc),
-          }));
-        }
-      }
-    } catch (e) {
-      if (seq !== translateSeq) return;
-      state.update((s) => ({ ...s, status: "翻译失败" }));
-      showError(e);
-      console.error(e);
+    } catch (error) {
+      if (requestId !== get(state).activeRequestId) return;
+      state.update((current) => ({ ...current, status: "翻译失败" }));
+      showError(error);
     } finally {
-      state.update((s) => ({
-        ...s,
-        isProcessing: false,
-        compareLoadingEngines: {},
-      }));
-      // 请求期间输入又变化，重新触发
-      const curInput = deps.getInput();
-      if (
-        pendingRetry &&
-        curInput.trim() &&
-        curInput !== lastTranslatedInput
-      ) {
+      if (requestId === get(state).activeRequestId) {
+        state.update((current) => ({ ...current, isProcessing: false, compareLoadingEngines: {} }));
+      }
+      const latest = deps.getInput();
+      if (pendingRetry && latest.trim() && latest !== lastTranslatedInput) {
         pendingRetry = false;
-        translate();
+        void translate();
       }
     }
   }
 
-  // handleAutoTranslate 自动翻译防抖：输入变化后延迟触发
-  function handleAutoTranslate(val: string): void {
+  function handleAutoTranslate(value: string): void {
     if (autoTimer) clearTimeout(autoTimer);
-    if (!val || !val.trim()) return;
+    if (!value.trim()) return;
     autoTimer = setTimeout(() => {
-      if (val === deps.getInput()) translate();
+      if (value === deps.getInput()) void translate();
     }, AUTO_TRANSLATE_DELAY);
   }
 
-  // retry 用户点击错误提示的重试按钮
-  function retry(): void {
-    dismissError();
-    translate();
-  }
-
-  function destroy(): void {
-    unsubscribeEngineResult();
-    if (autoTimer) clearTimeout(autoTimer);
-    if (errorTimer) clearTimeout(errorTimer);
-  }
-
-  return { state, translate, handleAutoTranslate, showError, dismissError, retry, destroy };
+  return {
+    state,
+    translate,
+    handleAutoTranslate,
+    showError,
+    dismissError,
+    retry: () => {
+      dismissError();
+      void translate();
+    },
+    setOutput: (output) => state.update((current) => ({ ...current, output })),
+    restore: (entry) => state.update((current) => ({
+      ...current,
+      output: entry.output,
+      compareOutputs: {},
+      status: "已从历史恢复",
+    })),
+    destroy: () => {
+      unsubscribeEngineResult();
+      if (autoTimer) clearTimeout(autoTimer);
+      if (errorTimer) clearTimeout(errorTimer);
+    },
+  };
 }

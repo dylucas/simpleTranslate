@@ -17,7 +17,8 @@ import (
 )
 
 type App struct {
-	ctx context.Context
+	ctx     context.Context
+	dataDir string
 	// 翻译结果缓存：key = engine|source|target|text，避免重复调用 API
 	translateCache *lruCache
 	// 语种识别缓存：key = engine|text，同一文本不重复检测
@@ -25,7 +26,19 @@ type App struct {
 }
 
 func NewApp() *App {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		home = "."
+	}
+	return NewAppWithDataDir(filepath.Join(home, ".simple_translate"))
+}
+
+// NewAppWithDataDir creates an application bound to an explicit data
+// directory. Production uses NewApp; tests use this constructor to guarantee
+// they never read or mutate a user's real configuration.
+func NewAppWithDataDir(dataDir string) *App {
 	return &App{
+		dataDir:        dataDir,
 		translateCache: newLRUCache(128),
 		detectCache:    newLRUCache(128),
 	}
@@ -36,10 +49,11 @@ func (a *App) startup(ctx context.Context) {
 }
 
 type TranslateResult struct {
-	Source  string `json:"source"`
-	AutoSrc string `json:"autoSrc"`
-	Target  string `json:"target"`
-	Text    string `json:"text"`
+	RequestID string `json:"requestId"`
+	Source    string `json:"source"`
+	AutoSrc   string `json:"autoSrc"`
+	Target    string `json:"target"`
+	Text      string `json:"text"`
 	// 结构化错误信息：成功时为空，失败时填充。
 	// 不再通过 Go error 返回，确保前端总能通过 result 拿到结构化错误用于差异化提示与重试策略。
 	Error     string `json:"error,omitempty"`     // 用户可读错误字符串
@@ -47,6 +61,7 @@ type TranslateResult struct {
 }
 
 type EngineTranslateResult struct {
+	RequestID string `json:"requestId"`
 	Engine    string `json:"engine"`
 	Text      string `json:"text"`
 	Error     string `json:"error,omitempty"`     // 兼容旧前端：用户可读错误字符串
@@ -54,10 +69,27 @@ type EngineTranslateResult struct {
 }
 
 type MultiTranslateResult struct {
-	Source  string                           `json:"source"`
-	AutoSrc string                           `json:"autoSrc"`
-	Target  string                           `json:"target"`
-	Results map[string]EngineTranslateResult `json:"results"`
+	RequestID string                           `json:"requestId"`
+	Source    string                           `json:"source"`
+	AutoSrc   string                           `json:"autoSrc"`
+	Target    string                           `json:"target"`
+	Results   map[string]EngineTranslateResult `json:"results"`
+}
+
+type TranslateRequest struct {
+	RequestID string `json:"requestId"`
+	Text      string `json:"text"`
+	Source    string `json:"source"`
+	Target    string `json:"target"`
+	Engine    string `json:"engine"`
+}
+
+type MultiTranslateRequest struct {
+	RequestID string   `json:"requestId"`
+	Text      string   `json:"text"`
+	Source    string   `json:"source"`
+	Target    string   `json:"target"`
+	Engines   []string `json:"engines"`
 }
 
 // HistoryEntry 与前端历史记录结构保持一致
@@ -73,8 +105,9 @@ type HistoryEntry struct {
 // TranslateText 给前端调用的统一入口。
 // 不再返回 Go error：所有错误通过 TranslateResult.Error/ErrorCode 字段返回，
 // 前端总能拿到结构化错误用于差异化提示与重试策略。
-func (a *App) TranslateText(text string, source string, target string, engine string) TranslateResult {
-	empty := TranslateResult{Source: source, Target: target}
+func (a *App) TranslateText(req TranslateRequest) TranslateResult {
+	text, source, target, engine := req.Text, req.Source, req.Target, req.Engine
+	empty := TranslateResult{RequestID: req.RequestID, Source: source, Target: target}
 	engine = strings.ToLower(strings.TrimSpace(engine))
 	if strings.TrimSpace(text) == "" {
 		return translateResultError(empty, newTranslateError(ErrCodeInvalidInput, engine, "输入文本为空", nil))
@@ -104,14 +137,15 @@ func (a *App) TranslateText(text string, source string, target string, engine st
 	ck := cacheKey(engine, src, tgt, text)
 	if v, ok := a.translateCache.get(ck); ok {
 		return TranslateResult{
-			Source:  source,
-			AutoSrc: src,
-			Target:  tgt,
-			Text:    v,
+			RequestID: req.RequestID,
+			Source:    source,
+			AutoSrc:   src,
+			Target:    tgt,
+			Text:      v,
 		}
 	}
 
-	result, err := translateWithEngine(engine, text, src, tgt)
+	result, err := a.translateWithEngine(engine, text, src, tgt)
 	if err != nil {
 		te := wrapTranslateError(engine, err)
 		empty.AutoSrc = src
@@ -125,10 +159,11 @@ func (a *App) TranslateText(text string, source string, target string, engine st
 	a.translateCache.set(ck, result)
 
 	return TranslateResult{
-		Source:  source,
-		AutoSrc: src,
-		Target:  tgt,
-		Text:    result,
+		RequestID: req.RequestID,
+		Source:    source,
+		AutoSrc:   src,
+		Target:    tgt,
+		Text:      result,
 	}
 }
 
@@ -149,11 +184,15 @@ func engineFallbackOrder(engine string) []string {
 	return []string{"tencent", "aliyun"}
 }
 
-func translateWithEngine(engine, text, source, target string) (string, error) {
-	if engine == "aliyun" {
-		return translate.TranslateGeneral(text, source, target)
+func (a *App) translateWithEngine(engine, text, source, target string) (string, error) {
+	cfg, err := a.GetConfig()
+	if err != nil {
+		return "", err
 	}
-	return translate.Translate(text, source, target)
+	if engine == "aliyun" {
+		return translate.TranslateGeneralWithConfig(text, source, target, cfg.Aliyun)
+	}
+	return translate.TranslateWithConfig(text, source, target, cfg.Tencent)
 }
 
 // fallbackTarget 当源语言与目标语言相同时，按习惯切换目标语言
@@ -212,10 +251,13 @@ func (a *App) detectLanguageBestEffort(text string, engines []string) (string, e
 			lang string
 			err  error
 		)
-		if e == "aliyun" {
-			lang, err = translate.GetDetectLanguage(text)
+		cfg, cfgErr := a.GetConfig()
+		if cfgErr != nil {
+			err = cfgErr
+		} else if e == "aliyun" {
+			lang, err = translate.GetDetectLanguageWithConfig(text, cfg.Aliyun)
 		} else {
-			lang, err = translate.DetectLanguage(text)
+			lang, err = translate.DetectLanguageWithConfig(text, cfg.Tencent)
 		}
 		if err == nil && lang != "" {
 			a.detectCache.set(cacheKey(e, text), lang)
@@ -238,13 +280,15 @@ const engineTimeout = 30 * time.Second
 // TranslateMulti 多引擎并发翻译：同一句话同时走多个引擎，返回并排结果。
 // 单引擎超时 engineTimeout，超时的引擎返回 "翻译超时" 错误而非阻塞整体。
 // 不再返回 Go error：识别失败时为每个引擎填充结构化错误，确保前端总能拿到 errorCode。
-func (a *App) TranslateMulti(text string, source string, target string, engines []string) MultiTranslateResult {
+
+func (a *App) TranslateMulti(req MultiTranslateRequest) MultiTranslateResult {
+	text, source, target, engines := req.Text, req.Source, req.Target, req.Engines
 	engines = normalizeEngines(engines)
 	src := source
-	emptyRes := MultiTranslateResult{Source: source, Target: target, Results: map[string]EngineTranslateResult{}}
+	emptyRes := MultiTranslateResult{RequestID: req.RequestID, Source: source, Target: target, Results: map[string]EngineTranslateResult{}}
 	if strings.TrimSpace(text) == "" {
 		err := newTranslateError(ErrCodeInvalidInput, "", "输入文本为空", nil)
-		emptyRes.Results = engineErrorResults(engines, err)
+		emptyRes.Results = engineErrorResults(req.RequestID, engines, err)
 		return emptyRes
 	}
 
@@ -255,7 +299,7 @@ func (a *App) TranslateMulti(text string, source string, target string, engines 
 			te := classifyError("", err)
 			te.Message = "语言识别失败：" + te.Message
 			// 为所有引擎填充同一错误，前端按 errorCode 显示
-			emptyRes.Results = engineErrorResults(engines, te)
+			emptyRes.Results = engineErrorResults(req.RequestID, engines, te)
 			return emptyRes
 		}
 		src = detected
@@ -272,7 +316,7 @@ func (a *App) TranslateMulti(text string, source string, target string, engines 
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			r := EngineTranslateResult{Engine: engine}
+			r := EngineTranslateResult{RequestID: req.RequestID, Engine: engine}
 
 			// 命中缓存直接用，跳过 API 调用
 			ck := cacheKey(engine, src, tgt, text)
@@ -294,7 +338,7 @@ func (a *App) TranslateMulti(text string, source string, target string, engines 
 					out string
 					err error
 				)
-				out, err = translateWithEngine(engine, text, src, tgt)
+				out, err = a.translateWithEngine(engine, text, src, tgt)
 				done <- outcome{out, err}
 			}()
 
@@ -329,18 +373,20 @@ func (a *App) TranslateMulti(text string, source string, target string, engines 
 	wg.Wait()
 
 	res := MultiTranslateResult{
-		Source:  source,
-		AutoSrc: src,
-		Target:  tgt,
-		Results: results,
+		RequestID: req.RequestID,
+		Source:    source,
+		AutoSrc:   src,
+		Target:    tgt,
+		Results:   results,
 	}
 	return res
 }
 
-func engineErrorResults(engines []string, err *TranslateError) map[string]EngineTranslateResult {
+func engineErrorResults(requestID string, engines []string, err *TranslateError) map[string]EngineTranslateResult {
 	results := make(map[string]EngineTranslateResult, len(engines))
 	for _, engine := range engines {
 		results[engine] = EngineTranslateResult{
+			RequestID: requestID,
 			Engine:    engine,
 			Error:     err.Message,
 			ErrorCode: err.Code,
@@ -350,18 +396,18 @@ func engineErrorResults(engines []string, err *TranslateError) map[string]Engine
 }
 
 // TestConnection 用一次最小请求验证指定引擎的凭据是否可用
-func (a *App) TestConnection(engine string) error {
+func (a *App) TestConnection(engine string, service ServiceConfig) error {
 	engine = strings.ToLower(strings.TrimSpace(engine))
 	probe := "hello"
 	switch engine {
 	case "aliyun":
-		_, err := translate.GetDetectLanguage(probe)
+		_, err := translate.GetDetectLanguageWithConfig(probe, service)
 		if err != nil {
 			return fmt.Errorf("阿里云连接测试失败: %v", err)
 		}
 		return nil
 	case "tencent", "":
-		_, err := translate.DetectLanguage(probe)
+		_, err := translate.DetectLanguageWithConfig(probe, service)
 		if err != nil {
 			return fmt.Errorf("混元连接测试失败: %v", err)
 		}
@@ -373,13 +419,8 @@ func (a *App) TestConnection(engine string) error {
 
 // getHistoryPath 返回历史记录文件路径
 func (a *App) getHistoryPath() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		home = "."
-	}
-	dir := filepath.Join(home, ".simple_translate")
-	_ = os.MkdirAll(dir, 0700)
-	return filepath.Join(dir, "history.json")
+	_ = os.MkdirAll(a.dataDir, 0700)
+	return filepath.Join(a.dataDir, "history.json")
 }
 
 // LoadHistory 读取本地持久化的历史记录

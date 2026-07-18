@@ -34,11 +34,15 @@ func CreateClient() (*openapi.Client, error) {
 	if err != nil {
 		return nil, fmt.Errorf("读取配置失败: %w", err)
 	}
-	if strings.TrimSpace(cfg.Aliyun.SecretId) == "" || strings.TrimSpace(cfg.Aliyun.SecretKey) == "" {
+	return CreateClientWithConfig(cfg.Aliyun)
+}
+
+func CreateClientWithConfig(service config.ServiceConfig) (*openapi.Client, error) {
+	if strings.TrimSpace(service.SecretId) == "" || strings.TrimSpace(service.SecretKey) == "" {
 		return nil, fmt.Errorf("未配置阿里云 AccessKey，请在设置中填写")
 	}
 
-	credsSig := cfg.Aliyun.SecretId + ":" + cfg.Aliyun.SecretKey + ":" + cfg.Aliyun.Region
+	credsSig := service.SecretId + ":" + service.SecretKey + ":" + service.Region
 
 	aliyunClientMu.Lock()
 	defer aliyunClientMu.Unlock()
@@ -48,15 +52,15 @@ func CreateClient() (*openapi.Client, error) {
 
 	credentialsConfig := new(credentials.Config).
 		SetType("access_key").
-		SetAccessKeyId(cfg.Aliyun.SecretId).
-		SetAccessKeySecret(cfg.Aliyun.SecretKey)
+		SetAccessKeyId(service.SecretId).
+		SetAccessKeySecret(service.SecretKey)
 	credentialClient, err := credentials.NewCredential(credentialsConfig)
 	if err != nil {
 		return nil, err
 	}
 
 	ecsConfig := &openapi.Config{}
-	ecsConfig.Endpoint = tea.String(aliyunEndpoint(cfg.Aliyun.Region))
+	ecsConfig.Endpoint = tea.String(aliyunEndpoint(service.Region))
 	ecsConfig.Credential = credentialClient
 
 	client, err := openapi.NewClient(ecsConfig)
@@ -160,6 +164,18 @@ func GetDetectLanguage(text string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return getDetectLanguage(text, client)
+}
+
+func GetDetectLanguageWithConfig(text string, service config.ServiceConfig) (string, error) {
+	client, err := CreateClientWithConfig(service)
+	if err != nil {
+		return "", err
+	}
+	return getDetectLanguage(text, client)
+}
+
+func getDetectLanguage(text string, client *openapi.Client) (string, error) {
 	text = strings.TrimSpace(text)
 	text = strings.ReplaceAll(text, "\n", " ")
 
@@ -202,6 +218,18 @@ func TranslateGeneral(text string, source string, target string) (string, error)
 	if err != nil {
 		return "", err
 	}
+	return translateGeneral(text, source, target, client)
+}
+
+func TranslateGeneralWithConfig(text string, source string, target string, service config.ServiceConfig) (string, error) {
+	client, err := CreateClientWithConfig(service)
+	if err != nil {
+		return "", err
+	}
+	return translateGeneral(text, source, target, client)
+}
+
+func translateGeneral(text string, source string, target string, client *openapi.Client) (string, error) {
 
 	params := CreateApiInfo("TranslateGeneral")
 	queries := map[string]interface{}{}

@@ -1,72 +1,51 @@
 <script lang="ts">
-  export let status = "准备就绪";
-  const shortcutMod = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform)
-    ? "⌘"
-    : "Ctrl+";
+  import type { EngineId } from "./types";
+  import { langs } from "./languages";
+
+  interface Props {
+    status: string;
+    bridgeKind: "wails" | "mock";
+    source: string;
+    target: string;
+    activeEngine: EngineId;
+    compareMode: boolean;
+  }
+  let { status, bridgeKind, source, target, activeEngine, compareMode }: Props = $props();
+  let statusClass = $derived(status === "翻译中..." ? "processing" : status.includes("失败") ? "error" : "done");
+  let routeLabel = $derived(`${source === "auto" ? "自动识别" : (langs[source] ?? source)} → ${langs[target] ?? target}`);
+  let engineLabel = $derived(compareMode ? "多引擎对照" : activeEngine === "tencent" ? "腾讯混元" : "阿里云 MT");
 </script>
 
-<footer class="app-status-bar">
-  <div class="status-item" role="status" aria-live="polite">
-    <span
-      class="status-dot"
-      class:processing={status === "翻译中..."}
-      class:done={status === "完成"}
-      class:error={status === "翻译失败"}
-    ></span>
-    {status}
+<footer class="status-bar">
+  <div class="status" role="status" aria-live="polite">
+    <span class="status-dot {statusClass}"></span>{status}
+    {#if bridgeKind === "mock"}<span class="preview-badge">预览</span>{/if}
   </div>
-  <div class="status-item shortcut-hint">
-    <span>{shortcutMod}Enter 翻译 · {shortcutMod}J 交换 · {shortcutMod}Shift+H 历史</span>
-  </div>
+  <span class="context"><span>{routeLabel}</span><i></i><span>{engineLabel}</span></span>
 </footer>
 
 <style>
-  .app-status-bar {
-    height: var(--statusbar-h);
-    border-top: 1px solid var(--border);
+  .status-bar {
     display: flex;
+    height: var(--statusbar-h);
+    flex: 0 0 auto;
     align-items: center;
     justify-content: space-between;
-    padding: 0 var(--sp-5);
-    font-size: var(--fs-xs);
-    color: var(--text-sec);
+    border-top: 1px solid var(--border-soft);
+    padding: 0 var(--sp-4);
     background: var(--bg-panel);
-    backdrop-filter: blur(18px);
-    -webkit-backdrop-filter: blur(18px);
-  }
-  .status-item {
-    display: flex;
-    align-items: center;
-    gap: var(--sp-1);
-  }
-  .shortcut-hint {
     color: var(--text-muted);
+    font-size: var(--fs-xs);
   }
-  .status-dot {
-    width: var(--sp-2);
-    height: var(--sp-2);
-    border-radius: var(--radius-full);
-    background: var(--success);
-    box-shadow: 0 0 0 0 var(--success-soft);
-  }
-  .status-dot.done {
-    background: var(--success);
-  }
-  .status-dot.processing {
-    background: var(--warning);
-    animation: pulse 1s var(--ease-standard) infinite;
-  }
-  .status-dot.error {
-    background: var(--danger);
-  }
-  @keyframes pulse {
-    0% { opacity: 1; }
-    50% { opacity: 0.4; }
-    100% { opacity: 1; }
-  }
-  @media (max-width: 720px) {
-    .shortcut-hint span {
-      display: none;
-    }
-  }
+  .status { display: flex; align-items: center; gap: var(--sp-2); color: var(--text-sec); }
+  .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--success); }
+  .status-dot.processing { background: var(--warning); animation: pulse 1s infinite; }
+  .status-dot.error { background: var(--danger); }
+  .preview-badge { border: 1px solid var(--border); border-radius: var(--radius-full); padding: 1px 6px; }
+  .context { display: flex; min-width: 0; align-items: center; gap: var(--sp-2); overflow: hidden; color: var(--text-muted); white-space: nowrap; }
+  .context span { overflow: hidden; text-overflow: ellipsis; }
+  .context i { width: 1px; height: 10px; flex: 0 0 auto; background: var(--border-strong); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  @media (max-width: 720px) { .context { max-width: 55%; } }
+  @media (max-width: 420px) { .context i, .context span:last-child { display: none; } }
 </style>

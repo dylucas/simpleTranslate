@@ -29,7 +29,7 @@ SimpleTranslate 是一个基于 Wails 框架开发的桌面翻译应用。后端
 ### 前置要求
 
 - Go 1.25 或更高版本
-- Node.js 16 或更高版本
+- Node.js 22 或更高版本
 - npm 或 yarn
 
 ### 下载
@@ -128,9 +128,11 @@ simpleTranslate/
 │   ├── src/
 │   │   ├── App.svelte      # 主 UI 组件
 │   │   └── lib/
-│   │       ├── Config.svelte     # 设置弹窗
-│   │       ├── History.svelte    # 历史记录抽屉
-│   │       └── store.ts          # 配置响应式 store
+│   │       ├── Config.svelte          # 设置草稿与连接测试
+│   │       ├── History.svelte         # 历史记录抽屉
+│   │       ├── bridge.ts              # Wails / 浏览器 Mock 桥接
+│   │       ├── configController.ts    # 串行配置持久化与回滚
+│   │       └── translateController.ts # 翻译请求与状态控制
 │   ├── DESIGN_SYSTEM.md  # 设计系统规范文档
 │   └── package.json
 ├── build/              # 构建相关文件
@@ -172,6 +174,7 @@ wails build -clean -o simpleTranslate-mac-arm64 -platform darwin/arm64
 - 多引擎对比设置（`compareMode`、`compareEngines`）
 - 剪贴板监听开关（`clipboardWatch`）
 - UI 设置（暗色模式、侧边栏折叠状态等）
+- 自动翻译开关与最近使用的源语言 / 目标语言
 
 历史记录独立存储于同目录的 `history.json`，上限 200 条。
 

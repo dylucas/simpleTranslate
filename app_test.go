@@ -69,7 +69,7 @@ func TestFallbackTarget(t *testing.T) {
 }
 
 func TestTranslateTextRejectsInvalidInput(t *testing.T) {
-	app := NewApp()
+	app := NewAppWithDataDir(t.TempDir())
 
 	for _, tt := range []struct {
 		name   string
@@ -80,7 +80,7 @@ func TestTranslateTextRejectsInvalidInput(t *testing.T) {
 		{name: "unknown engine", text: "hello", engine: "unknown"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			res := app.TranslateText(tt.text, "en", "zh", tt.engine)
+			res := app.TranslateText(TranslateRequest{RequestID: "invalid", Text: tt.text, Source: "en", Target: "zh", Engine: tt.engine})
 			if res.ErrorCode != ErrCodeInvalidInput {
 				t.Fatalf("ErrorCode = %q, want %q", res.ErrorCode, ErrCodeInvalidInput)
 			}
@@ -89,7 +89,10 @@ func TestTranslateTextRejectsInvalidInput(t *testing.T) {
 }
 
 func TestTranslateMultiRejectsEmptyInput(t *testing.T) {
-	res := NewApp().TranslateMulti("  ", "en", "zh", []string{"tencent", "aliyun"})
+	res := NewAppWithDataDir(t.TempDir()).TranslateMulti(MultiTranslateRequest{RequestID: "multi-empty", Text: "  ", Source: "en", Target: "zh", Engines: []string{"tencent", "aliyun"}})
+	if res.RequestID != "multi-empty" {
+		t.Fatalf("request ID = %q, want multi-empty", res.RequestID)
+	}
 	if len(res.Results) != 2 {
 		t.Fatalf("results length = %d, want 2", len(res.Results))
 	}
@@ -102,9 +105,7 @@ func TestTranslateMultiRejectsEmptyInput(t *testing.T) {
 
 // TestSaveLoadHistory_RoundTrip 保存后读取应一致
 func TestSaveLoadHistory_RoundTrip(t *testing.T) {
-	app := NewApp()
-	// 重定向历史路径到临时目录：通过覆盖 home 目录无法实现，这里直接测试 Save/Load
-	// 使用真实的 getHistoryPath，但先清空
+	app := NewAppWithDataDir(t.TempDir())
 	path := app.getHistoryPath()
 	_ = os.Remove(path)
 	defer os.Remove(path)
@@ -129,7 +130,7 @@ func TestSaveLoadHistory_RoundTrip(t *testing.T) {
 
 // TestLoadHistory_MissingFile 文件不存在时返回空列表无错误
 func TestLoadHistory_MissingFile(t *testing.T) {
-	app := NewApp()
+	app := NewAppWithDataDir(t.TempDir())
 	path := app.getHistoryPath()
 	_ = os.Remove(path)
 	defer os.Remove(path)
@@ -145,7 +146,7 @@ func TestLoadHistory_MissingFile(t *testing.T) {
 
 // TestSaveHistory_TruncatesTo200 验证历史记录上限 200 条
 func TestSaveHistory_TruncatesTo200(t *testing.T) {
-	app := NewApp()
+	app := NewAppWithDataDir(t.TempDir())
 	path := app.getHistoryPath()
 	_ = os.Remove(path)
 	defer os.Remove(path)
@@ -171,7 +172,7 @@ func TestSaveHistory_TruncatesTo200(t *testing.T) {
 
 // TestSaveHistory_EmptyList 空列表可正常保存与读取
 func TestSaveHistory_EmptyList(t *testing.T) {
-	app := NewApp()
+	app := NewAppWithDataDir(t.TempDir())
 	path := app.getHistoryPath()
 	_ = os.Remove(path)
 	defer os.Remove(path)
@@ -191,7 +192,7 @@ func TestSaveHistory_EmptyList(t *testing.T) {
 
 // TestLoadHistory_InvalidJSON 损坏的 JSON 文件应返回错误
 func TestLoadHistory_InvalidJSON(t *testing.T) {
-	app := NewApp()
+	app := NewAppWithDataDir(t.TempDir())
 	path := app.getHistoryPath()
 	_ = os.Remove(path)
 	defer os.Remove(path)
@@ -208,7 +209,7 @@ func TestLoadHistory_InvalidJSON(t *testing.T) {
 
 // TestGetHistoryPath_CreatesDir 历史路径所在目录会被自动创建
 func TestGetHistoryPath_CreatesDir(t *testing.T) {
-	app := NewApp()
+	app := NewAppWithDataDir(filepath.Join(t.TempDir(), "nested"))
 	path := app.getHistoryPath()
 	dir := filepath.Dir(path)
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
@@ -220,28 +221,22 @@ func TestGetHistoryPath_CreatesDir(t *testing.T) {
 // 通过在临时配置路径下写入空配置来模拟
 func TestTranslateText_MissingCreds(t *testing.T) {
 	config.InvalidateCache()
-	// 直接写入空配置到真实路径
-	path := config.GetConfigPath()
-	orig := readOriginalConfig(t, path)
-	defer func() {
-		_ = config.SaveConfig(path, orig)
-		config.InvalidateCache()
-	}()
+	app := NewAppWithDataDir(t.TempDir())
+	path := app.getConfigPath()
 
 	if err := config.SaveConfig(path, config.CloudConfig{}); err != nil {
 		t.Fatalf("SaveConfig 失败: %v", err)
 	}
 	config.InvalidateCache()
 
-	app := NewApp()
-	res := app.TranslateText("hello", "en", "zh", "aliyun")
+	res := app.TranslateText(TranslateRequest{RequestID: "aliyun-missing", Text: "hello", Source: "en", Target: "zh", Engine: "aliyun"})
 	if res.ErrorCode == "" {
 		t.Error("未配置阿里云凭据期望返回结构化错误码")
 	}
 	if res.ErrorCode != "credentials" {
 		t.Errorf("期望错误码 credentials，得到 %q", res.ErrorCode)
 	}
-	res = app.TranslateText("hello", "en", "zh", "tencent")
+	res = app.TranslateText(TranslateRequest{RequestID: "tencent-missing", Text: "hello", Source: "en", Target: "zh", Engine: "tencent"})
 	if res.ErrorCode == "" {
 		t.Error("未配置混元凭据期望返回结构化错误码")
 	}
@@ -250,12 +245,23 @@ func TestTranslateText_MissingCreds(t *testing.T) {
 	}
 }
 
-// readOriginalConfig 读取并返回原始配置（便于测试后恢复）
-func readOriginalConfig(t *testing.T, path string) config.CloudConfig {
-	t.Helper()
-	cfg, err := config.GetConfig(path)
-	if err != nil {
-		return config.CloudConfig{}
+func TestConnectionDraftDoesNotPersist(t *testing.T) {
+	config.InvalidateCache()
+	app := NewAppWithDataDir(t.TempDir())
+	persisted := config.DefaultCloudConfig()
+	persisted.Tencent.SecretKey = "persisted-key"
+	if err := app.SaveConfig(persisted); err != nil {
+		t.Fatal(err)
 	}
-	return cfg
+
+	if err := app.TestConnection("tencent", ServiceConfig{}); err == nil {
+		t.Fatal("empty draft credentials should fail connection validation")
+	}
+	got, err := app.GetConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Tencent.SecretKey != "persisted-key" {
+		t.Fatalf("connection test mutated persisted config: %q", got.Tencent.SecretKey)
+	}
 }

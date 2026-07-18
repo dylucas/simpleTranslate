@@ -10,20 +10,7 @@ import (
 
 // TestCreateClient_MissingCreds 未配置凭据时应返回明确错误
 func TestCreateClient_MissingCreds(t *testing.T) {
-	config.InvalidateCache()
-	path := config.GetConfigPath()
-	orig := mustReadConfig(t, path)
-	defer func() {
-		_ = config.SaveConfig(path, orig)
-		config.InvalidateCache()
-	}()
-
-	if err := config.SaveConfig(path, config.CloudConfig{}); err != nil {
-		t.Fatalf("SaveConfig 失败: %v", err)
-	}
-	config.InvalidateCache()
-
-	_, err := CreateClient()
+	_, err := CreateClientWithConfig(config.ServiceConfig{})
 	if err == nil {
 		t.Error("未配置阿里云凭据期望返回错误")
 		return
@@ -35,23 +22,7 @@ func TestCreateClient_MissingCreds(t *testing.T) {
 
 // TestCreateClient_PartialCreds 仅配置 SecretId 而无 SecretKey 应返回错误
 func TestCreateClient_PartialCreds(t *testing.T) {
-	config.InvalidateCache()
-	path := config.GetConfigPath()
-	orig := mustReadConfig(t, path)
-	defer func() {
-		_ = config.SaveConfig(path, orig)
-		config.InvalidateCache()
-	}()
-
-	cfg := config.CloudConfig{
-		Aliyun: config.ServiceConfig{SecretId: "only-id", SecretKey: ""},
-	}
-	if err := config.SaveConfig(path, cfg); err != nil {
-		t.Fatalf("SaveConfig 失败: %v", err)
-	}
-	config.InvalidateCache()
-
-	_, err := CreateClient()
+	_, err := CreateClientWithConfig(config.ServiceConfig{SecretId: "only-id"})
 	if err == nil {
 		t.Error("仅配置 SecretId 期望返回错误")
 	}
@@ -103,16 +74,6 @@ func TestAliyunEndpoint(t *testing.T) {
 			}
 		})
 	}
-}
-
-// mustReadConfig 读取配置，失败时返回零值（不使测试失败）
-func mustReadConfig(t *testing.T, path string) config.CloudConfig {
-	t.Helper()
-	cfg, err := config.GetConfig(path)
-	if err != nil {
-		return config.CloudConfig{}
-	}
-	return cfg
 }
 
 // TestFlexInt_UnmarshalJSON 验证 flexInt 能兼容字符串和数字两种形式

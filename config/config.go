@@ -18,16 +18,69 @@ type ServiceConfig struct {
 
 // CloudConfig 对应整个配置文件的结构（单一数据源，供 main 包与 translate 包共用）
 type CloudConfig struct {
+	Version          int           `json:"version"`
 	Tencent          ServiceConfig `json:"tencent"`
 	Aliyun           ServiceConfig `json:"aliyun"`
 	DefaultEngine    string        `json:"defaultEngine"` // "tencent" 或 "aliyun"
 	IsDark           bool          `json:"isDark"`
 	SidebarCollapsed bool          `json:"sidebarCollapsed"`
+	AutoTranslate    bool          `json:"autoTranslate"`
+	SourceLanguage   string        `json:"sourceLanguage"`
+	TargetLanguage   string        `json:"targetLanguage"`
 	// Multi-engine compare
 	CompareMode    bool     `json:"compareMode"`
 	CompareEngines []string `json:"compareEngines"`
 	// 剪贴板监听：开启后自动翻译复制的内容
 	ClipboardWatch bool `json:"clipboardWatch"`
+}
+
+const CurrentVersion = 2
+
+// DefaultCloudConfig is also used as the migration base for older files.
+// Unmarshalling on top of it preserves intentional false values while filling
+// fields that did not exist in previous schema versions.
+func DefaultCloudConfig() CloudConfig {
+	return CloudConfig{
+		Version:          CurrentVersion,
+		Aliyun:           ServiceConfig{Region: "cn-hangzhou"},
+		DefaultEngine:    "tencent",
+		IsDark:           true,
+		AutoTranslate:    true,
+		SourceLanguage:   "auto",
+		TargetLanguage:   "zh",
+		CompareEngines:   []string{"tencent", "aliyun"},
+		ClipboardWatch:   false,
+		SidebarCollapsed: false,
+	}
+}
+
+func normalizeConfig(cfg CloudConfig) CloudConfig {
+	cfg.Version = CurrentVersion
+	if cfg.DefaultEngine != "tencent" && cfg.DefaultEngine != "aliyun" {
+		cfg.DefaultEngine = "tencent"
+	}
+	if cfg.SourceLanguage == "" {
+		cfg.SourceLanguage = "auto"
+	}
+	if cfg.TargetLanguage == "" {
+		cfg.TargetLanguage = "zh"
+	}
+	if cfg.Aliyun.Region == "" {
+		cfg.Aliyun.Region = "cn-hangzhou"
+	}
+	seen := map[string]bool{}
+	engines := make([]string, 0, len(cfg.CompareEngines))
+	for _, engine := range cfg.CompareEngines {
+		if (engine == "tencent" || engine == "aliyun") && !seen[engine] {
+			engines = append(engines, engine)
+			seen[engine] = true
+		}
+	}
+	if len(engines) == 0 {
+		engines = []string{"tencent", "aliyun"}
+	}
+	cfg.CompareEngines = engines
+	return cfg
 }
 
 // 进程内配置缓存：避免每次翻译都从磁盘读取，SaveConfig 时同步刷新。
@@ -50,7 +103,7 @@ func GetConfigPath() string {
 }
 
 // GetConfig 读取配置：优先命中内存缓存，否则从磁盘读取并回填缓存。
-// 文件不存在时返回零值配置（不视为错误）；其他 IO/解析错误返回 error。
+// 文件不存在时返回默认配置（不视为错误）；其他 IO/解析错误返回 error。
 func GetConfig(path string) (CloudConfig, error) {
 	cacheMu.RLock()
 	if cached != nil && cachedPath == path {
@@ -60,11 +113,13 @@ func GetConfig(path string) (CloudConfig, error) {
 	}
 	cacheMu.RUnlock()
 
-	var cfg CloudConfig
+	cfg := DefaultCloudConfig()
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return cfg, nil
+			cfg = normalizeConfig(cfg)
+			updateCache(path, cfg)
+			return cloneConfig(cfg), nil
 		}
 		return cfg, fmt.Errorf("读取配置文件失败: %w", err)
 	}
@@ -72,12 +127,14 @@ func GetConfig(path string) (CloudConfig, error) {
 		return cfg, fmt.Errorf("解析配置文件失败: %w", err)
 	}
 
+	cfg = normalizeConfig(cfg)
 	updateCache(path, cfg)
 	return cfg, nil
 }
 
 // SaveConfig 将配置序列化为带缩进的 JSON 写入磁盘（0600 权限），并刷新内存缓存。
 func SaveConfig(path string, cfg CloudConfig) error {
+	cfg = normalizeConfig(cfg)
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return fmt.Errorf("序列化失败: %w", err)
