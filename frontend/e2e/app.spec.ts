@@ -23,15 +23,72 @@ test("main translation workflow remains usable", async ({ page }) => {
   await expect(page.getByRole("textbox", { name: "译文" })).toHaveValue("你好");
   await expect(page.locator(".status")).toContainText("完成");
 
-  await page.getByLabel("打开历史记录").click();
-  await expect(page.getByRole("dialog", { name: "历史记录" })).toBeVisible();
+  const historyTrigger = page.getByLabel("打开历史记录");
+  await historyTrigger.click();
+  const historyDialog = page.getByRole("dialog", { name: "历史记录" });
+  const historySearch = page.getByRole("textbox", { name: "搜索翻译记录" });
+  await expect(historyDialog).toBeVisible();
+  await expect(historySearch).toBeFocused();
+  await expect(historyDialog.getByText("自动识别", { exact: true })).toBeVisible();
+  await expect(historyDialog.getByText("中文", { exact: true })).toBeVisible();
   await expect(page.getByText("hello", { exact: true })).toBeVisible();
+
+  await historySearch.fill("hello");
+  await expect(historyDialog.getByText("1 / 1 条记录", { exact: true })).toBeVisible();
+
+  const historyLayout = await page.evaluate(() => {
+    const drawer = document.querySelector<HTMLElement>(".drawer");
+    const backdrop = document.querySelector<HTMLElement>(".backdrop");
+    const main = document.querySelector<HTMLElement>(".main-content");
+    const header = drawer?.querySelector<HTMLElement>("header");
+    const card = drawer?.querySelector<HTMLElement>(".history-item");
+    return {
+      viewportWidth: document.documentElement.clientWidth,
+      bodyWidth: document.body.scrollWidth,
+      drawerWidth: drawer?.getBoundingClientRect().width ?? 0,
+      drawerLeft: drawer?.getBoundingClientRect().left ?? 0,
+      mainRight: main?.getBoundingClientRect().right ?? 0,
+      backdropRight: backdrop?.getBoundingClientRect().right ?? 0,
+      backdropBackground: backdrop ? getComputedStyle(backdrop).backgroundColor : "",
+      docked: matchMedia("(min-width: 1180px)").matches,
+      headerClientWidth: header?.clientWidth ?? 0,
+      headerScrollWidth: header?.scrollWidth ?? 0,
+      sourceClamp: card ? getComputedStyle(card.querySelector("strong")!).webkitLineClamp : "",
+      outputClamp: card ? getComputedStyle(card.querySelector(".output")!).webkitLineClamp : "",
+    };
+  });
+  expect(historyLayout.bodyWidth).toBeLessThanOrEqual(historyLayout.viewportWidth);
+  expect(historyLayout.drawerWidth).toBeLessThanOrEqual(Math.min(440, historyLayout.viewportWidth));
+  expect(historyLayout.headerScrollWidth).toBeLessThanOrEqual(historyLayout.headerClientWidth);
+  expect(historyLayout.sourceClamp).toBe("2");
+  expect(historyLayout.outputClamp).toBe("2");
+  if (historyLayout.docked) {
+    expect(Math.abs(historyLayout.mainRight - historyLayout.drawerLeft)).toBeLessThanOrEqual(1);
+    expect(Math.abs(historyLayout.backdropRight - historyLayout.drawerLeft)).toBeLessThanOrEqual(1);
+    expect(historyLayout.backdropBackground).toBe("rgba(0, 0, 0, 0)");
+  } else {
+    expect(historyLayout.mainRight).toBeGreaterThan(historyLayout.drawerLeft);
+    expect(historyLayout.backdropRight).toBe(historyLayout.viewportWidth);
+  }
+
+  await page.getByText("hello", { exact: true }).click();
+  await expect(historyDialog).toBeHidden();
+  await expect(page.getByRole("textbox", { name: "原文" })).toHaveValue("hello");
+  await expect(historyTrigger).toBeFocused();
 });
 
 test("theme and settings dialogs remain keyboard accessible", async ({ page }) => {
   await page.goto("/");
   await page.getByLabel("切换深浅主题").click();
   await expect(page.locator(".app-shell")).toHaveClass(/light-mode/);
+
+  const historyTrigger = page.getByLabel("打开历史记录");
+  await historyTrigger.click();
+  await expect(page.getByRole("dialog", { name: "历史记录" })).toBeVisible();
+  await expect(page.locator(".drawer")).toHaveCSS("background-color", "rgb(255, 255, 255)");
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "历史记录" })).toBeHidden();
+  await expect(historyTrigger).toBeFocused();
 
   const settingsTrigger = page.getByLabel("打开设置");
   await settingsTrigger.click();

@@ -241,7 +241,7 @@
 
 <svelte:window onkeydown={handleGlobalKeydown} />
 
-<div class="app-shell" class:light-mode={!config.isDark}>
+<div class="app-shell" class:light-mode={!config.isDark} class:history-open={showHistory}>
   <ErrorToast errorToast={translation.errorToast} onRetry={() => controller.retry()} onSettings={() => { controller.dismissError(); openPanel("config"); }} onDismiss={() => controller.dismissError()} />
   <UtilityRail
     activePanel={showConfig ? "config" : showHistory ? "history" : null}
@@ -319,8 +319,8 @@
 </div>
 
 <style>
-  .app-shell { display: flex; width: 100vw; height: 100vh; overflow: hidden; background: var(--bg-base); color: var(--text-main); }
-  .main-content { display: flex; min-width: 0; flex: 1; flex-direction: column; background: var(--bg-workspace); }
+  .app-shell { --history-drawer-w: 440px; display: flex; width: 100vw; height: 100vh; overflow: hidden; background: var(--bg-base); color: var(--text-main); }
+  .main-content { display: flex; min-width: 0; flex: 1; flex-direction: column; background: var(--bg-workspace); transition: margin-right var(--t-base) var(--ease-standard); }
   .credential-banner { display: flex; min-height: 30px; flex: 0 0 auto; align-items: center; gap: var(--sp-2); border-bottom: 1px solid var(--warning-border); padding: 0 var(--sp-3); background: var(--warning-soft); color: var(--text-sec); font-size: var(--fs-xs); }
   .credential-banner span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .credential-banner :global(svg) { color: var(--warning); }
@@ -354,6 +354,12 @@
   .updating i { width: 7px; height: 7px; border-radius: 50%; background: var(--primary); animation: pulse 1s infinite; }
   .compare-wrap { display: flex; min-height: 0; flex: 1; flex-direction: column; }
   @keyframes pulse { 50% { opacity: .3; } }
+  @media (min-width: 1180px) {
+    .app-shell.history-open .main-content { margin-right: var(--history-drawer-w); }
+    .app-shell.history-open :global(.mode-toggles button) { width: 30px; padding-inline: 0; }
+    .app-shell.history-open :global(.mode-toggles span) { display: none; }
+    .app-shell.history-open :global(.engine-switch button) { min-width: 48px; }
+  }
   @media (max-width: 720px) {
     .workspace { grid-template-columns: 1fr; grid-template-rows: minmax(220px, 1fr) minmax(220px, 1fr); overflow: auto; }
     .credential-banner { min-height: 30px; }
