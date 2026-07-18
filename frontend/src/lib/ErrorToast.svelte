@@ -10,7 +10,7 @@
 </script>
 
 {#if errorToast}
-  <div class="error-toast" transition:fade={{ duration: 200 }}>
+  <div class="error-toast" role="alert" aria-live="assertive" transition:fade={{ duration: 200 }}>
     <AlertCircle size={16} />
     <span class="error-toast-msg">{errorToast.msg}</span>
     {#if errorToast.canRetry}
@@ -19,7 +19,7 @@
     {#if errorToast.showSettings}
       <button class="error-toast-action" on:click={() => dispatch("settings")}>前往设置</button>
     {/if}
-    <button class="error-toast-close" on:click={() => dispatch("dismiss")}>
+    <button class="error-toast-close" on:click={() => dispatch("dismiss")} aria-label="关闭错误提示">
       <X size={14} />
     </button>
   </div>
@@ -31,50 +31,56 @@
     top: 20px;
     left: 50%;
     transform: translateX(-50%);
-    z-index: 2000;
+    z-index: var(--z-toast);
     display: flex;
     align-items: center;
-    gap: 10px;
-    background: var(--danger);
+    gap: var(--sp-2);
+    background: var(--danger-strong);
     color: var(--text-inverse);
-    padding: 10px 16px;
+    padding: var(--sp-3) var(--sp-4);
     border-radius: var(--radius-md);
     box-shadow: var(--shadow-lg);
     font-size: var(--fs-base);
     font-weight: var(--fw-medium);
-    max-width: 80vw;
+    width: max-content;
+    max-width: min(560px, calc(100vw - var(--sp-8)));
+    border: 1px solid var(--danger);
   }
   .error-toast-msg {
     flex: 1;
     word-break: break-word;
   }
   .error-toast-action {
-    background: rgba(255, 255, 255, 0.18);
+    background: var(--on-color-soft);
     border: none;
-    color: #fff;
+    color: var(--text-inverse);
     cursor: pointer;
-    padding: 3px 10px;
-    border-radius: 4px;
+    min-height: var(--sp-6);
+    padding: var(--sp-1) var(--sp-2);
+    border-radius: var(--radius-sm);
     font-size: var(--fs-xs);
     font-weight: var(--fw-medium);
-    transition: background 0.2s;
+    transition: background var(--t-base) var(--ease-standard);
   }
   .error-toast-action:hover {
-    background: rgba(255, 255, 255, 0.3);
+    background: var(--on-color-hover);
   }
   .error-toast-close {
     background: transparent;
     border: none;
-    color: #fff;
+    color: var(--text-inverse);
     cursor: pointer;
-    padding: 2px;
-    border-radius: 4px;
+    width: var(--sp-6);
+    height: var(--sp-6);
+    padding: 0;
+    border-radius: var(--radius-sm);
     display: flex;
     align-items: center;
+    justify-content: center;
     opacity: 0.85;
   }
   .error-toast-close:hover {
     opacity: 1;
-    background: rgba(255, 255, 255, 0.15);
+    background: var(--on-color-soft);
   }
 </style>

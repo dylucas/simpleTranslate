@@ -13,6 +13,7 @@
     XCircle,
   } from "lucide-svelte";
   import { fade, fly } from "svelte/transition";
+  import { tick } from "svelte";
   import { configStore } from "./store";
 
   export let show = false;
@@ -23,10 +24,20 @@
   let config;
   // 连接测试状态：{ [engine]: { testing, ok, msg } }
   let connStatus = {};
+  let modalEl;
+  let wasShown = false;
 
   // 每次打开同步 Store 数据（使用 $configStore 自动订阅，避免手动 subscribe 带来的取消订阅问题）
   $: if (show) {
     config = JSON.parse(JSON.stringify($configStore));
+  }
+
+  $: if (show && !wasShown) {
+    wasShown = true;
+    tick().then(() => modalEl?.focus());
+  }
+  $: if (!show) {
+    wasShown = false;
   }
 
   async function handleSave() {
@@ -73,6 +84,12 @@
   >
     <div
       class="modal"
+      bind:this={modalEl}
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="config-title"
+      aria-describedby="config-description"
+      tabindex="-1"
       on:click|stopPropagation
       transition:fly={{ y: 20, duration: 300 }}
     >
@@ -82,11 +99,11 @@
             <Settings size={22} strokeWidth={2.5} />
           </div>
           <div class="header-info">
-            <h3>偏好设置</h3>
-            <span>管理您的 API 凭据和翻译服务</span>
+            <h3 id="config-title">偏好设置</h3>
+            <span id="config-description">管理 API 凭据和翻译服务</span>
           </div>
         </div>
-        <button class="close-btn" on:click={() => (show = false)}>
+        <button class="close-btn" on:click={() => (show = false)} aria-label="关闭偏好设置">
           <X size={18} />
         </button>
       </header>
@@ -102,7 +119,7 @@
               </div>
               <div class="item-control">
                 <div class="select-wrapper">
-                  <select bind:value={config.defaultEngine}>
+                  <select bind:value={config.defaultEngine} aria-label="默认翻译引擎">
                     <option value="tencent">腾讯混元 (hy-mt2-pro)</option>
                     <option value="aliyun">阿里云 (MT)</option>
                   </select>
@@ -217,7 +234,7 @@
       </main>
 
       <footer class="modal-footer">
-        <div class="footer-status">{message}</div>
+        <div class="footer-status" role="status" aria-live="polite">{message}</div>
         <div class="footer-actions">
           <button class="secondary-btn" on:click={() => (show = false)}>
             取消
@@ -247,12 +264,14 @@
     display: flex;
     align-items: center;
     justify-content: center;
+    padding: var(--sp-4);
     z-index: var(--z-modal);
   }
 
   .modal {
-    width: 580px;
-    max-width: 95vw;
+    width: 640px;
+    max-width: calc(100vw - var(--sp-8));
+    max-height: calc(100vh - var(--sp-8));
     background: var(--bg-elevated);
     border: 1px solid var(--border);
     border-radius: var(--radius-2xl);
@@ -264,7 +283,7 @@
 
   /* Header */
   .modal-header {
-    padding: 24px 32px;
+    padding: var(--sp-5) var(--sp-6);
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -273,15 +292,15 @@
 
   .header-main {
     display: flex;
-    gap: 16px;
+    gap: var(--sp-3);
     align-items: center;
   }
 
   .brand-icon {
     background: var(--accent-grad);
     color: var(--text-inverse);
-    width: 42px;
-    height: 42px;
+    width: var(--sp-10);
+    height: var(--sp-10);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -292,13 +311,13 @@
 
   .header-info h3 {
     margin: 0;
-    font-size: 18px;
-    font-weight: 600;
+    font-size: var(--fs-lg);
+    font-weight: var(--fw-semibold);
     color: var(--text-main);
   }
 
   .header-info span {
-    font-size: 12px;
+    font-size: var(--fs-sm);
     color: var(--text-sec);
   }
 
@@ -307,9 +326,15 @@
     border: none;
     color: var(--text-sec);
     cursor: pointer;
-    padding: 8px;
-    border-radius: 50%;
-    transition: 0.2s;
+    width: var(--sp-8);
+    height: var(--sp-8);
+    padding: 0;
+    border-radius: var(--radius-full);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: color var(--t-base) var(--ease-standard),
+      background var(--t-base) var(--ease-standard);
   }
 
   .close-btn:hover {
@@ -319,54 +344,57 @@
 
   /* Content */
   .modal-content {
-    padding: 24px 32px;
-    max-height: 65vh;
+    flex: 1;
+    min-height: 0;
+    padding: var(--sp-5) var(--sp-6);
     overflow-y: auto;
     display: flex;
     flex-direction: column;
-    gap: 28px;
+    gap: var(--sp-6);
   }
 
   .group-title {
-    font-size: 11px;
-    font-weight: 700;
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-bold);
     color: var(--primary);
     text-transform: uppercase;
-    letter-spacing: 1px;
-    margin-bottom: 12px;
+    letter-spacing: var(--tracking-widest);
+    margin-bottom: var(--sp-3);
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--sp-2);
   }
 
   .settings-card,
   .input-card {
     background: var(--bg-surface);
     border: 1px solid var(--border);
-    border-radius: 16px;
-    padding: 20px;
+    border-radius: var(--radius-lg);
+    padding: var(--sp-4);
+    box-shadow: var(--shadow-sm);
   }
 
   .setting-item {
     display: flex;
     justify-content: space-between;
     align-items: center;
+    gap: var(--sp-4);
   }
 
   .item-label {
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: var(--sp-1);
   }
 
   .main-label {
-    font-size: 14px;
-    font-weight: 500;
+    font-size: var(--fs-md);
+    font-weight: var(--fw-medium);
     color: var(--text-main);
   }
 
   .sub-label {
-    font-size: 12px;
+    font-size: var(--fs-sm);
     color: var(--text-sec);
   }
 
@@ -374,26 +402,26 @@
   .input-card {
     display: flex;
     flex-direction: column;
-    gap: 16px;
+    gap: var(--sp-4);
   }
 
   .input-row {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: 16px;
+    gap: var(--sp-4);
   }
 
   .input-field {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: var(--sp-2);
   }
 
   .input-field label {
-    font-size: 12px;
-    font-weight: 500;
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-medium);
     color: var(--text-sec);
-    margin-left: 2px;
+    margin-left: var(--sp-1);
   }
 
   .input-wrapper {
@@ -404,7 +432,7 @@
 
   .input-wrapper :global(svg) {
     position: absolute;
-    left: 12px;
+    left: var(--sp-3);
     color: var(--text-sec);
     pointer-events: none;
   }
@@ -414,16 +442,16 @@
     width: 100%;
     background: var(--bg-input);
     border: 1px solid var(--border);
-    border-radius: 10px;
-    padding: 10px 12px 10px 36px;
+    border-radius: var(--radius-md);
+    padding: var(--sp-3) var(--sp-3) var(--sp-3) var(--sp-10);
     color: var(--text-main);
-    font-size: 14px;
-    transition: all 0.2s;
-    outline: none;
+    font-size: var(--fs-md);
+    transition: border-color var(--t-base) var(--ease-standard),
+      box-shadow var(--t-base) var(--ease-standard);
   }
 
   select {
-    padding-left: 12px;
+    padding-left: var(--sp-3);
     appearance: none;
     cursor: pointer;
   }
@@ -437,22 +465,24 @@
   .test-row {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: var(--sp-2);
     flex-wrap: wrap;
   }
   .test-btn {
     background: var(--bg-input);
     border: 1px solid var(--border);
     color: var(--text-main);
-    padding: 8px 14px;
-    border-radius: 10px;
-    font-size: 13px;
-    font-weight: 500;
+    padding: var(--sp-2) var(--sp-3);
+    border-radius: var(--radius-md);
+    font-size: var(--fs-base);
+    font-weight: var(--fw-medium);
     display: inline-flex;
     align-items: center;
-    gap: 6px;
+    gap: var(--sp-2);
     cursor: pointer;
-    transition: all 0.2s;
+    transition: color var(--t-base) var(--ease-standard),
+      background var(--t-base) var(--ease-standard),
+      border-color var(--t-base) var(--ease-standard);
   }
   .test-btn:hover:not(:disabled) {
     border-color: var(--primary);
@@ -465,9 +495,9 @@
   .test-msg {
     display: inline-flex;
     align-items: center;
-    gap: 4px;
-    font-size: 12px;
-    font-weight: 500;
+    gap: var(--sp-1);
+    font-size: var(--fs-sm);
+    font-weight: var(--fw-medium);
   }
   .test-msg.ok {
     color: var(--success);
@@ -482,7 +512,7 @@
 
   /* Footer */
   .modal-footer {
-    padding: 20px 32px 32px;
+    padding: var(--sp-4) var(--sp-6) var(--sp-5);
     display: flex;
     justify-content: space-between;
     align-items: center;
@@ -490,21 +520,21 @@
   }
 
   .footer-status {
-    font-size: 13px;
+    font-size: var(--fs-base);
     color: var(--primary);
-    font-weight: 500;
+    font-weight: var(--fw-medium);
   }
 
   .footer-actions {
     display: flex;
-    gap: 12px;
+    gap: var(--sp-3);
   }
 
   .primary-btn {
     background: var(--accent-grad);
     color: var(--text-inverse);
     border: none;
-    padding: 10px 20px;
+    padding: var(--sp-2) var(--sp-5);
     border-radius: var(--radius-md);
     font-size: var(--fs-md);
     font-weight: var(--fw-semibold);
@@ -518,10 +548,10 @@
       box-shadow var(--t-base) var(--ease-standard);
   }
 
-  .primary-btn:hover {
+  .primary-btn:hover:not(:disabled) {
     filter: brightness(1.08);
     transform: translateY(-1px);
-    box-shadow: 0 10px 28px -4px var(--accent-glow);
+    box-shadow: var(--shadow-glow);
   }
 
   .primary-btn:disabled {
@@ -533,11 +563,12 @@
     background: transparent;
     border: 1px solid var(--border);
     color: var(--text-main);
-    padding: 10px 20px;
-    border-radius: 10px;
-    font-size: 14px;
+    padding: var(--sp-2) var(--sp-5);
+    border-radius: var(--radius-md);
+    font-size: var(--fs-md);
     cursor: pointer;
-    transition: 0.2s;
+    transition: background var(--t-base) var(--ease-standard),
+      border-color var(--t-base) var(--ease-standard);
   }
 
   .secondary-btn:hover {
@@ -553,15 +584,61 @@
     }
   }
 
+  :global(.spin) {
+    animation: spin 0.9s linear infinite;
+  }
+
   /* Custom Scrollbar */
   .modal-content::-webkit-scrollbar {
-    width: 5px;
+    width: var(--sp-2);
   }
   .modal-content::-webkit-scrollbar-track {
     background: transparent;
   }
   .modal-content::-webkit-scrollbar-thumb {
     background: var(--border);
-    border-radius: 10px;
+    border-radius: var(--radius-full);
+  }
+
+  @media (max-width: 640px) {
+    .overlay {
+      padding: var(--sp-2);
+    }
+    .modal {
+      max-width: calc(100vw - var(--sp-4));
+      max-height: calc(100vh - var(--sp-4));
+      border-radius: var(--radius-xl);
+    }
+    .modal-header,
+    .modal-content,
+    .modal-footer {
+      padding-inline: var(--sp-4);
+    }
+    .input-row {
+      grid-template-columns: 1fr;
+    }
+    .setting-item {
+      align-items: stretch;
+      flex-direction: column;
+    }
+    .item-control {
+      width: 100%;
+    }
+    .modal-footer {
+      gap: var(--sp-3);
+    }
+  }
+
+  @media (max-height: 520px) {
+    .overlay {
+      padding: 0;
+    }
+    .modal {
+      width: 100vw;
+      max-width: 100vw;
+      max-height: 100vh;
+      height: 100vh;
+      border-radius: 0;
+    }
   }
 </style>

@@ -19,12 +19,12 @@
    ========================================================================== */
 :root {
   /* —— 品牌主色（靛蓝 / 紫罗兰，更具现代辨识度）—— */
-  --primary: #6366f1;          /* indigo-500 */
-  --primary-hover: #4f46e5;   /* indigo-600 */
-  --primary-active: #4338ca;  /* indigo-700 */
-  --primary-soft: rgba(99, 102, 241, 0.12);
-  --accent-glow: rgba(99, 102, 241, 0.28);
-  --accent-grad: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  --primary: #a5a0ff;
+  --primary-hover: #b7b3ff;
+  --primary-active: #8d86f7;
+  --primary-soft: rgba(139, 130, 246, 0.14);
+  --accent-glow: rgba(124, 112, 246, 0.24);
+  --accent-grad: linear-gradient(135deg, #7067ed 0%, #8b5cf6 100%);
 
   /* —— 语义色 —— */
   --success: #10b981;
@@ -33,27 +33,36 @@
   --warning-soft: rgba(245, 158, 11, 0.12);
   --danger: #ef4444;
   --danger-soft: rgba(239, 68, 68, 0.12);
+  --danger-strong: #991b1b;
   --info: #06b6d4;
   --info-soft: rgba(6, 182, 212, 0.12);
+  --warning-border: rgba(245, 158, 11, 0.28);
+  --on-color-soft: rgba(255, 255, 255, 0.14);
+  --on-color-hover: rgba(255, 255, 255, 0.22);
 
   /* —— 表面 / 背景层级 —— */
-  --bg-base: #0d0f14;         /* 最底层：深邃墨色 */
-  --bg-sidebar: #11141b;
-  --bg-surface: #161a23;
-  --bg-elevated: #1c2130;
-  --bg-input: #0b0d12;
-  --bg-hover: #232838;
-  --bg-overlay: rgba(0, 0, 0, 0.55);
+  --bg-base: #0c0e13;
+  --bg-sidebar: #101219;
+  --bg-surface: #161922;
+  --bg-elevated: #1b1f2a;
+  --bg-input: #11141c;
+  --bg-hover: #222735;
+  --bg-overlay: rgba(5, 7, 12, 0.68);
+  --bg-workspace: radial-gradient(circle at 74% 8%, rgba(112, 103, 237, 0.1), transparent 34%),
+    linear-gradient(155deg, #11141b 0%, #0c0e13 70%);
+  --bg-panel: rgba(22, 25, 34, 0.88);
+  --bg-panel-muted: rgba(15, 18, 25, 0.78);
 
   /* —— 边框 —— */
-  --border: #262c3d;
-  --border-soft: #1f2433;
-  --border-strong: #353c52;
+  --border: #2a2f3e;
+  --border-soft: #202431;
+  --border-strong: #3a4154;
+  --border-highlight: rgba(255, 255, 255, 0.075);
 
   /* —— 文本 —— */
-  --text-main: #e8ebf0;
-  --text-sec: #98a2b3;
-  --text-muted: #6b7280;
+  --text-main: #f1f2f6;
+  --text-sec: #aab1c0;
+  --text-muted: #858da0;
   --text-inverse: #ffffff;
 
   /* —— 阴影（分层、柔和）—— */
@@ -63,6 +72,7 @@
   --shadow-lg: 0 12px 24px -6px rgba(0, 0, 0, 0.5);
   --shadow-xl: 0 24px 48px -12px rgba(0, 0, 0, 0.6);
   --shadow-glow: 0 8px 24px -4px var(--accent-glow);
+  --shadow-card: 0 1px 0 var(--border-highlight), 0 18px 42px rgba(0, 0, 0, 0.18);
 
   /* —— 圆角尺度 —— */
   --radius-xs: 4px;
@@ -129,10 +139,10 @@
   --z-toast: 2000;
 
   /* —— 结构尺寸 —— */
-  --sidebar-w: 240px;
-  --sidebar-collapsed-w: 72px;
-  --header-h: 64px;
-  --statusbar-h: 32px;
+  --sidebar-w: 208px;
+  --sidebar-collapsed-w: 68px;
+  --header-h: 72px;
+  --statusbar-h: 36px;
 
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
     "Helvetica Neue", "Nunito", "PingFang SC", "Hiragino Sans GB",
@@ -145,12 +155,12 @@
    设计令牌 · 浅色主题
    ========================================================================== */
 .light-mode {
-  --primary: #4f46e5;          /* indigo-600 */
-  --primary-hover: #4338ca;   /* indigo-700 */
-  --primary-active: #3730a3;  /* indigo-800 */
-  --primary-soft: rgba(79, 70, 229, 0.08);
-  --accent-glow: rgba(79, 70, 229, 0.18);
-  --accent-grad: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%);
+  --primary: #5146d8;
+  --primary-hover: #4338ca;
+  --primary-active: #3730a3;
+  --primary-soft: rgba(79, 70, 229, 0.09);
+  --accent-glow: rgba(79, 70, 229, 0.16);
+  --accent-grad: linear-gradient(135deg, #5b52df 0%, #7c3aed 100%);
 
   --success: #059669;
   --success-soft: rgba(5, 150, 105, 0.1);
@@ -158,24 +168,33 @@
   --warning-soft: rgba(217, 119, 6, 0.1);
   --danger: #dc2626;
   --danger-soft: rgba(220, 38, 38, 0.08);
+  --danger-strong: #991b1b;
   --info: #0891b2;
   --info-soft: rgba(8, 145, 178, 0.1);
+  --warning-border: rgba(217, 119, 6, 0.24);
+  --on-color-soft: rgba(255, 255, 255, 0.16);
+  --on-color-hover: rgba(255, 255, 255, 0.24);
 
-  --bg-base: #f7f8fc;
-  --bg-sidebar: #ffffff;
+  --bg-base: #f4f5f9;
+  --bg-sidebar: #fbfbfd;
   --bg-surface: #ffffff;
   --bg-elevated: #ffffff;
-  --bg-input: #f3f5fa;
-  --bg-hover: #eef1f7;
+  --bg-input: #f7f7fa;
+  --bg-hover: #f0f1f6;
   --bg-overlay: rgba(15, 23, 42, 0.35);
+  --bg-workspace: radial-gradient(circle at 74% 8%, rgba(99, 102, 241, 0.09), transparent 36%),
+    linear-gradient(155deg, #f8f8fc 0%, #f1f3f8 70%);
+  --bg-panel: rgba(255, 255, 255, 0.9);
+  --bg-panel-muted: rgba(248, 249, 252, 0.92);
 
   --border: #e4e8f0;
   --border-soft: #eef1f7;
   --border-strong: #d1d8e4;
+  --border-highlight: rgba(255, 255, 255, 0.8);
 
-  --text-main: #16192a;
-  --text-sec: #5b6478;
-  --text-muted: #8b94a7;
+  --text-main: #171927;
+  --text-sec: #596174;
+  --text-muted: #687185;
   --text-inverse: #ffffff;
 
   --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
@@ -184,6 +203,7 @@
   --shadow-lg: 0 12px 24px -6px rgba(15, 23, 42, 0.12);
   --shadow-xl: 0 24px 48px -12px rgba(15, 23, 42, 0.18);
   --shadow-glow: 0 8px 24px -4px var(--accent-glow);
+  --shadow-card: 0 1px 0 var(--border-highlight), 0 14px 36px rgba(42, 48, 72, 0.08);
 }
 
 /* ==========================================================================
@@ -203,6 +223,7 @@ html {
 
 body {
   margin: 0;
+  min-width: 0;
   color: var(--text-main);
   font-family: var(--font-sans);
   font-size: var(--fs-base);
@@ -211,10 +232,27 @@ body {
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  background: var(--bg-base);
 }
 
 #app {
   height: 100vh;
+  min-height: 0;
+}
+
+button,
+input,
+select,
+textarea {
+  font: inherit;
+}
+
+button {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button:disabled {
+  cursor: not-allowed;
 }
 
 /* 全局选区颜色 */

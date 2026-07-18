@@ -16,12 +16,15 @@
   }>();
 </script>
 
-<aside class="sidebar" class:collapsed={sidebarCollapsed}>
+<aside class="sidebar" class:collapsed={sidebarCollapsed} aria-label="应用侧边栏">
   <div class="sidebar-header">
     {#if !sidebarCollapsed}
       <div class="brand" transition:fade={{ duration: 150 }}>
         <div class="brand-icon"><Languages size={22} /></div>
-        <span>Translate</span>
+        <div class="brand-copy">
+          <span>SimpleTranslate</span>
+          <small>智能翻译工作台</small>
+        </div>
       </div>
     {/if}
     <button
@@ -29,6 +32,7 @@
       class:centered={sidebarCollapsed}
       on:click={() => dispatch("toggleSidebar")}
       title={sidebarCollapsed ? "展开" : "收起"}
+      aria-label={sidebarCollapsed ? "展开侧边栏" : "收起侧边栏"}
     >
       <div class="icon-wrapper" class:rotated={sidebarCollapsed}>
         <PanelLeftClose size={18} />
@@ -37,7 +41,10 @@
   </div>
 
   <nav class="side-nav">
-    <button class="nav-item" on:click={() => dispatch("openHistory")} title="历史记录">
+    {#if !sidebarCollapsed}
+      <span class="nav-label" transition:fade={{ duration: 100 }}>工作区</span>
+    {/if}
+    <button class="nav-item" on:click={() => dispatch("openHistory")} title="历史记录" aria-label="打开历史记录">
       <div class="nav-icon"><HistoryIcon size={20} /></div>
       {#if !sidebarCollapsed}
         <span class="nav-text" transition:fade={{ duration: 100 }}>历史记录</span>
@@ -48,15 +55,16 @@
   <div class="sidebar-footer">
     {#if !sidebarCollapsed}
       <div class="engine-box" transition:fade={{ duration: 100 }}>
-        <!-- svelte-ignore a11y-label-has-associated-control -->
-        <label>翻译引擎</label>
-        <div class="engine-pills">
+        <span class="engine-label" id="engine-label">默认引擎</span>
+        <div class="engine-pills" role="group" aria-labelledby="engine-label">
           <button
             class:active={activeEngine === "tencent"}
+            aria-pressed={activeEngine === "tencent"}
             on:click={() => dispatch("selectEngine", "tencent")}>混元</button
           >
           <button
             class:active={activeEngine === "aliyun"}
+            aria-pressed={activeEngine === "aliyun"}
             on:click={() => dispatch("selectEngine", "aliyun")}>阿里</button
           >
         </div>
@@ -64,10 +72,10 @@
     {/if}
 
     <div class="bottom-tools" class:column-layout={sidebarCollapsed}>
-      <button class="tool-btn" on:click={() => dispatch("toggleTheme")} title="切换主题">
+      <button class="tool-btn" on:click={() => dispatch("toggleTheme")} title="切换主题" aria-label="切换深浅主题">
         {#if isDark}<Sun size={18} />{:else}<Moon size={18} />{/if}
       </button>
-      <button class="tool-btn" on:click={() => dispatch("openSettings")} title="设置">
+      <button class="tool-btn" on:click={() => dispatch("openSettings")} title="设置" aria-label="打开设置">
         <Settings size={18} />
       </button>
     </div>
@@ -84,34 +92,35 @@
     transition: width var(--t-slow) var(--ease-standard);
     z-index: var(--z-sidebar);
     flex-shrink: 0;
-    backdrop-filter: blur(10px);
-    -webkit-backdrop-filter: blur(10px);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    overflow: hidden;
   }
   .sidebar.collapsed {
     width: var(--sidebar-collapsed-w);
   }
   .sidebar-header {
-    height: 64px;
+    min-height: var(--header-h);
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 16px;
+    gap: var(--sp-2);
+    padding: 0 var(--sp-3);
     position: relative;
+    border-bottom: 1px solid var(--border-soft);
   }
   .brand {
     display: flex;
     align-items: center;
-    gap: var(--sp-2);
-    font-weight: var(--fw-bold);
-    font-size: var(--fs-lg);
-    letter-spacing: var(--tracking-tight);
+    gap: var(--sp-3);
     color: var(--text-main);
     white-space: nowrap;
     overflow: hidden;
+    min-width: 0;
   }
   .brand-icon {
-    width: 34px;
-    height: 34px;
+    width: var(--sp-10);
+    height: var(--sp-10);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -121,13 +130,35 @@
     box-shadow: var(--shadow-glow);
     flex-shrink: 0;
   }
+  .brand-copy {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    line-height: var(--lh-tight);
+  }
+  .brand-copy span {
+    max-width: 122px;
+    overflow: hidden;
+    color: var(--text-main);
+    font-size: var(--fs-md);
+    font-weight: var(--fw-bold);
+    letter-spacing: var(--tracking-tight);
+    text-overflow: ellipsis;
+  }
+  .brand-copy small {
+    margin-top: var(--sp-1);
+    color: var(--text-muted);
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-medium);
+  }
   .collapse-toggle {
     background: transparent;
     border: none;
     color: var(--text-sec);
-    width: 32px;
-    height: 32px;
-    border-radius: var(--radius-sm);
+    width: var(--sp-8);
+    height: var(--sp-8);
+    padding: 0;
+    border-radius: var(--radius-md);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -151,10 +182,18 @@
   }
   .side-nav {
     flex: 1;
-    padding: var(--sp-4) var(--sp-3);
+    padding: var(--sp-5) var(--sp-3);
     display: flex;
     flex-direction: column;
-    gap: var(--sp-1);
+    gap: var(--sp-2);
+  }
+  .nav-label {
+    padding: 0 var(--sp-3);
+    color: var(--text-muted);
+    font-size: var(--fs-xs);
+    font-weight: var(--fw-semibold);
+    letter-spacing: var(--tracking-widest);
+    text-transform: uppercase;
   }
   .nav-item {
     display: flex;
@@ -166,7 +205,7 @@
     color: var(--text-sec);
     cursor: pointer;
     transition: all var(--t-base) var(--ease-standard);
-    height: 44px;
+    min-height: var(--sp-10);
     width: 100%;
     text-align: left;
   }
@@ -182,7 +221,7 @@
     display: flex;
     justify-content: center;
     align-items: center;
-    min-width: 24px;
+    min-width: var(--sp-6);
   }
   .nav-text {
     margin-left: var(--sp-3);
@@ -194,14 +233,24 @@
     border-top: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    gap: var(--sp-4);
-    padding: var(--sp-4) var(--sp-3);
+    gap: var(--sp-3);
+    padding: var(--sp-3);
     transition: padding var(--t-slow) var(--ease-standard);
   }
-  .engine-box label {
+  .engine-box {
+    overflow: hidden;
+    padding: var(--sp-3);
+    background: var(--bg-input);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    transition:
+      max-height var(--t-slow) var(--ease-standard),
+      opacity var(--t-base) var(--ease-standard);
+  }
+  .engine-label {
     font-size: var(--fs-xs);
     font-weight: var(--fw-semibold);
-    color: var(--text-sec);
+    color: var(--text-muted);
     margin-bottom: var(--sp-2);
     display: block;
     text-transform: uppercase;
@@ -209,9 +258,10 @@
   }
   .engine-pills {
     display: flex;
-    background: var(--bg-hover);
-    border-radius: var(--radius-sm);
-    padding: 3px;
+    gap: var(--sp-1);
+    background: var(--bg-sidebar);
+    border-radius: var(--radius-md);
+    padding: var(--sp-1);
   }
   .engine-pills button {
     flex: 1;
@@ -221,7 +271,7 @@
     font-size: var(--fs-sm);
     font-weight: var(--fw-medium);
     padding: var(--sp-1) var(--sp-2);
-    border-radius: var(--radius-xs);
+    border-radius: var(--radius-sm);
     cursor: pointer;
     transition: all var(--t-base) var(--ease-standard);
   }
@@ -229,8 +279,8 @@
     color: var(--text-main);
   }
   .engine-pills button.active {
-    background: var(--bg-surface);
-    color: var(--text-main);
+    background: var(--primary-soft);
+    color: var(--primary);
     box-shadow: var(--shadow-sm);
     font-weight: var(--fw-semibold);
   }
@@ -240,12 +290,6 @@
     justify-content: space-between;
     transition: all var(--t-slow) var(--ease-standard);
   }
-  .engine-box {
-    overflow: hidden;
-    transition:
-      max-height var(--t-slow) var(--ease-standard),
-      opacity var(--t-base) var(--ease-standard);
-  }
   .sidebar.collapsed .sidebar-footer {
     padding: var(--sp-4) 0;
   }
@@ -254,10 +298,18 @@
     align-items: center;
     gap: var(--sp-3);
   }
+  .sidebar.collapsed .side-nav {
+    padding-inline: var(--sp-3);
+  }
+  .sidebar.collapsed .nav-item {
+    justify-content: center;
+    padding-inline: var(--sp-2);
+  }
   .tool-btn {
     background: transparent;
     border: 1px solid transparent;
     color: var(--text-sec);
+    min-height: var(--sp-10);
     padding: var(--sp-2);
     border-radius: var(--radius-md);
     cursor: pointer;
@@ -269,8 +321,8 @@
     min-width: 0;
   }
   .sidebar.collapsed .tool-btn {
-    width: 40px;
-    height: 40px;
+    width: var(--sp-10);
+    height: var(--sp-10);
     flex: none;
   }
   .tool-btn:hover {
@@ -280,5 +332,54 @@
   }
   .tool-btn:active {
     transform: scale(0.94);
+  }
+
+  @media (max-width: 900px) {
+    .sidebar:not(.collapsed) {
+      width: 184px;
+    }
+    .brand-copy span {
+      max-width: 98px;
+    }
+  }
+
+  @media (max-width: 720px) {
+    .sidebar,
+    .sidebar:not(.collapsed) {
+      width: var(--sidebar-collapsed-w);
+    }
+    .sidebar:not(.collapsed) .brand,
+    .sidebar:not(.collapsed) .nav-label,
+    .sidebar:not(.collapsed) .nav-text,
+    .sidebar:not(.collapsed) .engine-box {
+      display: none;
+    }
+    .sidebar-header {
+      justify-content: center;
+      padding-inline: var(--sp-3);
+    }
+    .collapse-toggle {
+      width: 100%;
+    }
+    .side-nav {
+      padding-inline: var(--sp-3);
+    }
+    .nav-item {
+      justify-content: center;
+      padding-inline: var(--sp-2);
+    }
+    .sidebar-footer {
+      padding: var(--sp-4) 0;
+    }
+    .bottom-tools {
+      flex-direction: column;
+      align-items: center;
+      gap: var(--sp-3);
+    }
+    .tool-btn {
+      width: var(--sp-10);
+      height: var(--sp-10);
+      flex: none;
+    }
   }
 </style>

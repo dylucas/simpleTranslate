@@ -1,9 +1,12 @@
 <script lang="ts">
   export let status = "准备就绪";
+  const shortcutMod = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform)
+    ? "⌘"
+    : "Ctrl+";
 </script>
 
 <footer class="app-status-bar">
-  <div class="status-item">
+  <div class="status-item" role="status" aria-live="polite">
     <span
       class="status-dot"
       class:processing={status === "翻译中..."}
@@ -13,7 +16,7 @@
     {status}
   </div>
   <div class="status-item shortcut-hint">
-    <span>Ctrl+Enter 发送 · Ctrl+J 交换 · Ctrl+Shift+H 历史</span>
+    <span>{shortcutMod}Enter 翻译 · {shortcutMod}J 交换 · {shortcutMod}Shift+H 历史</span>
   </div>
 </footer>
 
@@ -24,10 +27,12 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    padding: 0 var(--sp-4);
+    padding: 0 var(--sp-5);
     font-size: var(--fs-xs);
     color: var(--text-sec);
-    background: var(--bg-sidebar);
+    background: var(--bg-panel);
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
   }
   .status-item {
     display: flex;
@@ -38,8 +43,8 @@
     color: var(--text-muted);
   }
   .status-dot {
-    width: 6px;
-    height: 6px;
+    width: var(--sp-2);
+    height: var(--sp-2);
     border-radius: var(--radius-full);
     background: var(--success);
     box-shadow: 0 0 0 0 var(--success-soft);
@@ -49,7 +54,7 @@
   }
   .status-dot.processing {
     background: var(--warning);
-    animation: pulse 1s infinite;
+    animation: pulse 1s var(--ease-standard) infinite;
   }
   .status-dot.error {
     background: var(--danger);
