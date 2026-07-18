@@ -11,7 +11,6 @@ import (
 	"simpleTranslate/config"
 
 	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
-	openapiutil "github.com/alibabacloud-go/openapi-util/service"
 	util "github.com/alibabacloud-go/tea-utils/v2/service"
 	"github.com/alibabacloud-go/tea/tea"
 	"github.com/aliyun/credentials-go/credentials"
@@ -29,6 +28,7 @@ var (
 
 // CreateClient 获取或构建阿里云 openapi.Client。
 // 当凭据签名未变化时直接复用缓存的客户端，避免重复初始化开销。
+// Deprecated: 新代码应使用 CreateClientWithConfig，避免隐式读写用户目录。
 func CreateClient() (*openapi.Client, error) {
 	cfg, err := config.GetConfig(config.GetConfigPath())
 	if err != nil {
@@ -159,6 +159,7 @@ func (f *flexInt) UnmarshalJSON(data []byte) error {
 }
 
 // GetDetectLanguage 调用阿里云接口识别语种，返回前端约定的语言代码
+// Deprecated: 新代码应使用 GetDetectLanguageWithConfig。
 func GetDetectLanguage(text string) (string, error) {
 	client, err := CreateClient()
 	if err != nil {
@@ -213,6 +214,7 @@ func getDetectLanguage(text string, client *openapi.Client) (string, error) {
 }
 
 // TranslateGeneral 调用阿里云通用翻译接口
+// Deprecated: 新代码应使用 TranslateGeneralWithConfig。
 func TranslateGeneral(text string, source string, target string) (string, error) {
 	client, err := CreateClient()
 	if err != nil {
@@ -232,7 +234,6 @@ func TranslateGeneralWithConfig(text string, source string, target string, servi
 func translateGeneral(text string, source string, target string, client *openapi.Client) (string, error) {
 
 	params := CreateApiInfo("TranslateGeneral")
-	queries := map[string]interface{}{}
 	body := map[string]interface{}{}
 	body["FormatType"] = tea.String("text")
 	body["SourceLanguage"] = tea.String(source)
@@ -245,8 +246,7 @@ func translateGeneral(text string, source string, target string, client *openapi
 		ConnectTimeout: tea.Int(30000),
 	}
 	request := &openapi.OpenApiRequest{
-		Query: openapiutil.Query(queries),
-		Body:  body,
+		Body: body,
 	}
 
 	resp, err := client.CallApi(params, request, runtime)

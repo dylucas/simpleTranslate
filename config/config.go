@@ -91,6 +91,7 @@ var (
 )
 
 // GetConfigPath 返回配置文件路径，目录不存在时自动创建。
+// Deprecated: 新代码应显式传入配置路径，避免隐式读写用户目录。
 func GetConfigPath() string {
 	home, err := os.UserHomeDir()
 	if err != nil {

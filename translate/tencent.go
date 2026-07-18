@@ -155,6 +155,7 @@ func normalizeLangCode(raw string) string {
 }
 
 // DetectLanguage 使用 hy-mt2-pro 识别语种，返回前端约定的语言代码
+// Deprecated: 新代码应使用 DetectLanguageWithConfig。
 func DetectLanguage(text string) (string, error) {
 	return detectLanguage(text, chatCompletion)
 }
@@ -182,6 +183,7 @@ func detectLanguage(text string, complete func(string) (string, error)) (string,
 }
 
 // Translate 使用 hy-mt2-pro 翻译
+// Deprecated: 新代码应使用 TranslateWithConfig。
 func Translate(text, source, target string) (string, error) {
 	return translateText(text, source, target, chatCompletion)
 }

@@ -312,7 +312,6 @@ func (a *App) TranslateMulti(req MultiTranslateRequest) MultiTranslateResult {
 	var wg sync.WaitGroup
 
 	for _, engine := range engines {
-		engine := engine
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
