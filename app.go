@@ -3,9 +3,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"simpleTranslate/internal/storage"
 	"simpleTranslate/translate"
 	"strings"
 	"sync"
@@ -40,14 +42,14 @@ type TranslateResult struct {
 	Text    string `json:"text"`
 	// 结构化错误信息：成功时为空，失败时填充。
 	// 不再通过 Go error 返回，确保前端总能通过 result 拿到结构化错误用于差异化提示与重试策略。
-	Error     string `json:"error,omitempty"`        // 用户可读错误字符串
-	ErrorCode string `json:"errorCode,omitempty"`    // 错误类别：credentials/network/timeout/rate_limit/invalid_input/service_unavailable/unknown
+	Error     string `json:"error,omitempty"`     // 用户可读错误字符串
+	ErrorCode string `json:"errorCode,omitempty"` // 错误类别：credentials/network/timeout/rate_limit/invalid_input/service_unavailable/unknown
 }
 
 type EngineTranslateResult struct {
-	Engine string `json:"engine"`
-	Text   string `json:"text"`
-	Error  string `json:"error,omitempty"`        // 兼容旧前端：用户可读错误字符串
+	Engine    string `json:"engine"`
+	Text      string `json:"text"`
+	Error     string `json:"error,omitempty"`     // 兼容旧前端：用户可读错误字符串
 	ErrorCode string `json:"errorCode,omitempty"` // 结构化错误类别（credentials/network/timeout/...），前端按类别差异化提示与重试
 }
 
@@ -73,30 +75,24 @@ type HistoryEntry struct {
 // 前端总能拿到结构化错误用于差异化提示与重试策略。
 func (a *App) TranslateText(text string, source string, target string, engine string) TranslateResult {
 	empty := TranslateResult{Source: source, Target: target}
+	engine = strings.ToLower(strings.TrimSpace(engine))
+	if strings.TrimSpace(text) == "" {
+		return translateResultError(empty, newTranslateError(ErrCodeInvalidInput, engine, "输入文本为空", nil))
+	}
+	if !isSupportedEngine(engine) {
+		return translateResultError(empty, newTranslateError(ErrCodeInvalidInput, engine, "不支持的翻译引擎", nil))
+	}
 	src := source
 
 	// 自动识别语种（与 TranslateMulti 保持一致：best-effort 跨引擎兜底）
 	if src == "" || src == "auto" {
 		// 优先使用当前引擎；失败时按引擎列表兜底
-		engines := []string{engine}
-		if engine != "tencent" && engine != "aliyun" {
-			engines = []string{"tencent", "aliyun"}
-		} else {
-			// 把另一个引擎追加为兜底
-			other := "aliyun"
-			if engine == "aliyun" {
-				other = "tencent"
-			}
-			engines = append(engines, other)
-		}
+		engines := engineFallbackOrder(engine)
 		detected, err := a.detectLanguageBestEffort(text, engines)
 		if err != nil {
 			te := classifyError(engine, err)
 			te.Message = "语言识别失败：" + te.Message
-			empty.AutoSrc = ""
-			empty.Error = te.Message
-			empty.ErrorCode = te.Code
-			return empty
+			return translateResultError(empty, te)
 		}
 		src = detected
 	}
@@ -115,13 +111,7 @@ func (a *App) TranslateText(text string, source string, target string, engine st
 		}
 	}
 
-	result := ""
-	var err error
-	if engine == "aliyun" {
-		result, err = translate.TranslateGeneral(text, src, tgt)
-	} else {
-		result, err = translate.Translate(text, src, tgt)
-	}
+	result, err := translateWithEngine(engine, text, src, tgt)
 	if err != nil {
 		te := wrapTranslateError(engine, err)
 		empty.AutoSrc = src
@@ -140,6 +130,30 @@ func (a *App) TranslateText(text string, source string, target string, engine st
 		Target:  tgt,
 		Text:    result,
 	}
+}
+
+func translateResultError(result TranslateResult, err *TranslateError) TranslateResult {
+	result.Error = err.Message
+	result.ErrorCode = err.Code
+	return result
+}
+
+func isSupportedEngine(engine string) bool {
+	return engine == "tencent" || engine == "aliyun"
+}
+
+func engineFallbackOrder(engine string) []string {
+	if engine == "aliyun" {
+		return []string{"aliyun", "tencent"}
+	}
+	return []string{"tencent", "aliyun"}
+}
+
+func translateWithEngine(engine, text, source, target string) (string, error) {
+	if engine == "aliyun" {
+		return translate.TranslateGeneral(text, source, target)
+	}
+	return translate.Translate(text, source, target)
 }
 
 // fallbackTarget 当源语言与目标语言相同时，按习惯切换目标语言
@@ -188,6 +202,7 @@ func cacheKey(parts ...string) string {
 // detectLanguageBestEffort 尝试多引擎识别语种，优先命中缓存。
 // Try in given order; prefer aliyun if present because it has dedicated API.
 func (a *App) detectLanguageBestEffort(text string, engines []string) (string, error) {
+	var engineErrors []error
 	for _, e := range engines {
 		// 命中缓存直接返回，避免重复调用
 		if v, ok := a.detectCache.get(cacheKey(e, text)); ok {
@@ -206,8 +221,13 @@ func (a *App) detectLanguageBestEffort(text string, engines []string) (string, e
 			a.detectCache.set(cacheKey(e, text), lang)
 			return lang, nil
 		}
+		if err != nil {
+			engineErrors = append(engineErrors, fmt.Errorf("%s: %w", e, err))
+		} else {
+			engineErrors = append(engineErrors, fmt.Errorf("%s: 未返回识别结果", e))
+		}
 	}
-	return "", fmt.Errorf("语言识别失败")
+	return "", errors.Join(engineErrors...)
 }
 
 // engineTimeout 单引擎翻译最大等待时间。
@@ -222,6 +242,11 @@ func (a *App) TranslateMulti(text string, source string, target string, engines 
 	engines = normalizeEngines(engines)
 	src := source
 	emptyRes := MultiTranslateResult{Source: source, Target: target, Results: map[string]EngineTranslateResult{}}
+	if strings.TrimSpace(text) == "" {
+		err := newTranslateError(ErrCodeInvalidInput, "", "输入文本为空", nil)
+		emptyRes.Results = engineErrorResults(engines, err)
+		return emptyRes
+	}
 
 	// 自动识别一次，供所有引擎共用
 	if src == "" || src == "auto" {
@@ -230,15 +255,7 @@ func (a *App) TranslateMulti(text string, source string, target string, engines 
 			te := classifyError("", err)
 			te.Message = "语言识别失败：" + te.Message
 			// 为所有引擎填充同一错误，前端按 errorCode 显示
-			results := map[string]EngineTranslateResult{}
-			for _, e := range engines {
-				results[e] = EngineTranslateResult{
-					Engine:    e,
-					Error:     te.Message,
-					ErrorCode: te.Code,
-				}
-			}
-			emptyRes.Results = results
+			emptyRes.Results = engineErrorResults(engines, te)
 			return emptyRes
 		}
 		src = detected
@@ -277,11 +294,7 @@ func (a *App) TranslateMulti(text string, source string, target string, engines 
 					out string
 					err error
 				)
-				if engine == "aliyun" {
-					out, err = translate.TranslateGeneral(text, src, tgt)
-				} else {
-					out, err = translate.Translate(text, src, tgt)
-				}
+				out, err = translateWithEngine(engine, text, src, tgt)
 				done <- outcome{out, err}
 			}()
 
@@ -324,6 +337,18 @@ func (a *App) TranslateMulti(text string, source string, target string, engines 
 	return res
 }
 
+func engineErrorResults(engines []string, err *TranslateError) map[string]EngineTranslateResult {
+	results := make(map[string]EngineTranslateResult, len(engines))
+	for _, engine := range engines {
+		results[engine] = EngineTranslateResult{
+			Engine:    engine,
+			Error:     err.Message,
+			ErrorCode: err.Code,
+		}
+	}
+	return results
+}
+
 // TestConnection 用一次最小请求验证指定引擎的凭据是否可用
 func (a *App) TestConnection(engine string) error {
 	engine = strings.ToLower(strings.TrimSpace(engine))
@@ -353,9 +378,7 @@ func (a *App) getHistoryPath() string {
 		home = "."
 	}
 	dir := filepath.Join(home, ".simple_translate")
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		_ = os.MkdirAll(dir, 0755)
-	}
+	_ = os.MkdirAll(dir, 0700)
 	return filepath.Join(dir, "history.json")
 }
 
@@ -386,5 +409,5 @@ func (a *App) SaveHistory(entries []HistoryEntry) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0600)
+	return storage.WriteFileAtomic(path, data, 0600)
 }

@@ -27,10 +27,10 @@ const (
 // TranslateError 结构化翻译错误，序列化为 JSON 后供前端按类别处理。
 // 兼容旧前端：Error() 返回与原格式一致的字符串。
 type TranslateError struct {
-	Code    string `json:"code"`              // 错误类别，供前端判断重试策略
-	Engine  string `json:"engine,omitempty"`  // 出错的引擎（tencent/aliyun）
-	Message string `json:"message"`           // 用户可读的错误信息（已去除 Error: 前缀）
-	Cause   string `json:"cause,omitempty"`   // 底层错误摘要，便于调试
+	Code    string `json:"code"`             // 错误类别，供前端判断重试策略
+	Engine  string `json:"engine,omitempty"` // 出错的引擎（tencent/aliyun）
+	Message string `json:"message"`          // 用户可读的错误信息（已去除 Error: 前缀）
+	Cause   string `json:"cause,omitempty"`  // 底层错误摘要，便于调试
 }
 
 func (e *TranslateError) Error() string {
@@ -67,8 +67,13 @@ func classifyError(engine string, err error) *TranslateError {
 		strings.Contains(lower, "api key") ||
 		strings.Contains(lower, "secretid") ||
 		strings.Contains(lower, "secretkey") ||
+		strings.Contains(lower, "http 401") ||
+		strings.Contains(lower, "http 403") ||
+		strings.Contains(lower, "unauthorized") ||
+		strings.Contains(lower, "forbidden") ||
 		strings.Contains(lower, "未配置") ||
 		strings.Contains(lower, "鉴权") ||
+		strings.Contains(lower, "无权限") ||
 		strings.Contains(lower, "signaturedoesnotmatch") ||
 		strings.Contains(lower, "invalidaccesskey") {
 		return newTranslateError(ErrCodeCredentials, engine, "凭据无效或未配置，请在设置中检查", err)

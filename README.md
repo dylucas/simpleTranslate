@@ -130,7 +130,7 @@ simpleTranslate/
 │   │   └── lib/
 │   │       ├── Config.svelte     # 设置弹窗
 │   │       ├── History.svelte    # 历史记录抽屉
-│   │       └── store.js          # 配置响应式 store
+│   │       └── store.ts          # 配置响应式 store
 │   ├── DESIGN_SYSTEM.md  # 设计系统规范文档
 │   └── package.json
 ├── build/              # 构建相关文件
@@ -169,7 +169,7 @@ wails build -clean -o simpleTranslate-mac-arm64 -platform darwin/arm64
 
 - 云服务 API 密钥（腾讯云 / 阿里云的 SecretId、SecretKey、Region）
 - 默认翻译引擎（`tencent` / `aliyun`）
-- 多引擎对比设置（`compareMode`、`compareEngines`、`pickBest`）
+- 多引擎对比设置（`compareMode`、`compareEngines`）
 - 剪贴板监听开关（`clipboardWatch`）
 - UI 设置（暗色模式、侧边栏折叠状态等）
 

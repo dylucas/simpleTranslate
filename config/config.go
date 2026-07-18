@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"simpleTranslate/internal/storage"
 	"sync"
 )
 
@@ -25,16 +26,15 @@ type CloudConfig struct {
 	// Multi-engine compare
 	CompareMode    bool     `json:"compareMode"`
 	CompareEngines []string `json:"compareEngines"`
-	PickBest       bool     `json:"pickBest"`
 	// 剪贴板监听：开启后自动翻译复制的内容
 	ClipboardWatch bool `json:"clipboardWatch"`
 }
 
 // 进程内配置缓存：避免每次翻译都从磁盘读取，SaveConfig 时同步刷新。
 var (
-	cacheMu     sync.RWMutex
-	cached      *CloudConfig
-	cachedPath  string
+	cacheMu    sync.RWMutex
+	cached     *CloudConfig
+	cachedPath string
 )
 
 // GetConfigPath 返回配置文件路径，目录不存在时自动创建。
@@ -45,9 +45,7 @@ func GetConfigPath() string {
 		home = "."
 	}
 	dir := filepath.Join(home, ".simple_translate")
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		_ = os.MkdirAll(dir, 0755)
-	}
+	_ = os.MkdirAll(dir, 0700)
 	return filepath.Join(dir, "config.json")
 }
 
@@ -56,7 +54,7 @@ func GetConfigPath() string {
 func GetConfig(path string) (CloudConfig, error) {
 	cacheMu.RLock()
 	if cached != nil && cachedPath == path {
-		cfg := *cached
+		cfg := cloneConfig(*cached)
 		cacheMu.RUnlock()
 		return cfg, nil
 	}
@@ -84,7 +82,7 @@ func SaveConfig(path string, cfg CloudConfig) error {
 	if err != nil {
 		return fmt.Errorf("序列化失败: %w", err)
 	}
-	if err := os.WriteFile(path, data, 0600); err != nil {
+	if err := storage.WriteFileAtomic(path, data, 0600); err != nil {
 		return fmt.Errorf("写入文件失败: %w", err)
 	}
 
@@ -96,9 +94,14 @@ func SaveConfig(path string, cfg CloudConfig) error {
 func updateCache(path string, cfg CloudConfig) {
 	cacheMu.Lock()
 	defer cacheMu.Unlock()
-	cfgCopy := cfg
+	cfgCopy := cloneConfig(cfg)
 	cached = &cfgCopy
 	cachedPath = path
+}
+
+func cloneConfig(cfg CloudConfig) CloudConfig {
+	cfg.CompareEngines = append([]string(nil), cfg.CompareEngines...)
+	return cfg
 }
 
 // InvalidateCache 清空内存缓存，主要用于测试场景。

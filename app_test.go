@@ -68,6 +68,38 @@ func TestFallbackTarget(t *testing.T) {
 	}
 }
 
+func TestTranslateTextRejectsInvalidInput(t *testing.T) {
+	app := NewApp()
+
+	for _, tt := range []struct {
+		name   string
+		text   string
+		engine string
+	}{
+		{name: "empty text", text: "  \n\t", engine: "tencent"},
+		{name: "unknown engine", text: "hello", engine: "unknown"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			res := app.TranslateText(tt.text, "en", "zh", tt.engine)
+			if res.ErrorCode != ErrCodeInvalidInput {
+				t.Fatalf("ErrorCode = %q, want %q", res.ErrorCode, ErrCodeInvalidInput)
+			}
+		})
+	}
+}
+
+func TestTranslateMultiRejectsEmptyInput(t *testing.T) {
+	res := NewApp().TranslateMulti("  ", "en", "zh", []string{"tencent", "aliyun"})
+	if len(res.Results) != 2 {
+		t.Fatalf("results length = %d, want 2", len(res.Results))
+	}
+	for engine, result := range res.Results {
+		if result.ErrorCode != ErrCodeInvalidInput {
+			t.Fatalf("%s ErrorCode = %q, want %q", engine, result.ErrorCode, ErrCodeInvalidInput)
+		}
+	}
+}
+
 // TestSaveLoadHistory_RoundTrip 保存后读取应一致
 func TestSaveLoadHistory_RoundTrip(t *testing.T) {
 	app := NewApp()

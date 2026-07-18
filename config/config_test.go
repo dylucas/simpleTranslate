@@ -26,11 +26,11 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	path := filepath.Join(dir, "config.json")
 
 	want := CloudConfig{
-		Tencent:       ServiceConfig{SecretId: "tid", SecretKey: "tkey", Region: "ap-guangzhou"},
-		Aliyun:        ServiceConfig{SecretId: "aid", SecretKey: "akey", Region: "cn-hangzhou"},
-		DefaultEngine: "tencent",
-		IsDark:        true,
-		CompareMode:   true,
+		Tencent:        ServiceConfig{SecretId: "tid", SecretKey: "tkey", Region: "ap-guangzhou"},
+		Aliyun:         ServiceConfig{SecretId: "aid", SecretKey: "akey", Region: "cn-hangzhou"},
+		DefaultEngine:  "tencent",
+		IsDark:         true,
+		CompareMode:    true,
 		CompareEngines: []string{"tencent", "aliyun"},
 	}
 
@@ -144,6 +144,29 @@ func TestSaveConfig_UpdatesCache(t *testing.T) {
 	}
 	if got.DefaultEngine != "aliyun" {
 		t.Errorf("期望 defaultEngine=aliyun，得到 %q", got.DefaultEngine)
+	}
+}
+
+func TestGetConfig_CacheReturnsDeepCopy(t *testing.T) {
+	InvalidateCache()
+	path := filepath.Join(t.TempDir(), "config.json")
+	want := []string{"tencent", "aliyun"}
+	if err := SaveConfig(path, CloudConfig{CompareEngines: want}); err != nil {
+		t.Fatalf("SaveConfig 失败: %v", err)
+	}
+
+	got, err := GetConfig(path)
+	if err != nil {
+		t.Fatalf("GetConfig 失败: %v", err)
+	}
+	got.CompareEngines[0] = "modified"
+
+	again, err := GetConfig(path)
+	if err != nil {
+		t.Fatalf("第二次 GetConfig 失败: %v", err)
+	}
+	if !reflect.DeepEqual(again.CompareEngines, want) {
+		t.Fatalf("调用方修改污染了配置缓存: got=%v want=%v", again.CompareEngines, want)
 	}
 }
 

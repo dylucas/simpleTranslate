@@ -3,6 +3,7 @@ package translate
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,11 +56,7 @@ func CreateClient() (*openapi.Client, error) {
 	}
 
 	ecsConfig := &openapi.Config{}
-	if strings.TrimSpace(cfg.Aliyun.Region) == "" {
-		ecsConfig.Endpoint = tea.String(defaultAliyunEndpoint)
-	} else {
-		ecsConfig.Endpoint = tea.String(cfg.Aliyun.Region)
-	}
+	ecsConfig.Endpoint = tea.String(aliyunEndpoint(cfg.Aliyun.Region))
 	ecsConfig.Credential = credentialClient
 
 	client, err := openapi.NewClient(ecsConfig)
@@ -70,6 +67,23 @@ func CreateClient() (*openapi.Client, error) {
 	aliyunClient = client
 	aliyunCredsSig = credsSig
 	return client, nil
+}
+
+// aliyunEndpoint accepts either a region (for example cn-hangzhou) or a full
+// endpoint. Older configurations and the UI default store the region value.
+func aliyunEndpoint(regionOrEndpoint string) string {
+	value := strings.TrimSpace(regionOrEndpoint)
+	if value == "" {
+		return defaultAliyunEndpoint
+	}
+	if parsed, err := url.Parse(value); err == nil && parsed.Host != "" {
+		value = parsed.Host
+	}
+	value = strings.TrimSuffix(value, "/")
+	if strings.Contains(value, ".") {
+		return value
+	}
+	return "mt." + value + ".aliyuncs.com"
 }
 
 // CreateApiInfo 构造阿里云 RPC 接口请求参数
@@ -107,6 +121,7 @@ type APIResponse struct {
 // ResponseBody 阿里云翻译接口响应体
 type ResponseBody struct {
 	Code      flexInt        `json:"Code"`
+	Message   string         `json:"Message"`
 	Data      TranslatedData `json:"Data"`
 	RequestID string         `json:"RequestId"`
 }
@@ -220,9 +235,22 @@ func TranslateGeneral(text string, source string, target string) (string, error)
 		return "", err
 	}
 
-	if result.StatusCode != 200 {
-		return "", fmt.Errorf("阿里云翻译失败: HTTP %d", result.StatusCode)
+	if err := validateTranslateResponse(result); err != nil {
+		return "", err
 	}
 
 	return result.Body.Data.Translated, nil
+}
+
+func validateTranslateResponse(result APIResponse) error {
+	if result.StatusCode != 200 {
+		return fmt.Errorf("阿里云翻译失败: HTTP %d", result.StatusCode)
+	}
+	if int(result.Body.Code) != 200 {
+		if result.Body.Message != "" {
+			return fmt.Errorf("阿里云翻译失败: Code %d: %s", result.Body.Code, result.Body.Message)
+		}
+		return fmt.Errorf("阿里云翻译失败: Code %d", result.Body.Code)
+	}
+	return nil
 }

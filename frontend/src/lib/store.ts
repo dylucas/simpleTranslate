@@ -11,7 +11,6 @@ export interface CloudConfig {
   defaultEngine: string;
   compareMode: boolean;
   compareEngines: string[];
-  pickBest: boolean;
   clipboardWatch: boolean;
   tencent: ServiceConfig;
   aliyun: ServiceConfig;
@@ -24,7 +23,6 @@ const DEFAULT_CONFIG: CloudConfig = {
   defaultEngine: "tencent",
   compareMode: false,
   compareEngines: ["tencent", "aliyun"],
-  pickBest: false,
   clipboardWatch: false,
   tencent: { secretId: "", secretKey: "", region: "" } as ServiceConfig,
   aliyun: { secretId: "", secretKey: "", region: "cn-hangzhou" } as ServiceConfig,

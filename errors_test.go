@@ -13,6 +13,8 @@ func TestClassifyError_Credentials(t *testing.T) {
 		"SignatureDoesNotMatch",
 		"missing api key",
 		"SecretId not set",
+		"HTTP 401: Unauthorized",
+		"HTTP 403: Forbidden",
 	}
 	for _, c := range cases {
 		te := classifyError("aliyun", errors.New(c))

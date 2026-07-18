@@ -85,6 +85,26 @@ func TestCreateApiInfo(t *testing.T) {
 	}
 }
 
+func TestAliyunEndpoint(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{name: "default", input: "", want: defaultAliyunEndpoint},
+		{name: "region", input: "cn-hangzhou", want: defaultAliyunEndpoint},
+		{name: "endpoint", input: "mt.cn-shanghai.aliyuncs.com", want: "mt.cn-shanghai.aliyuncs.com"},
+		{name: "URL", input: "https://mt.cn-beijing.aliyuncs.com/", want: "mt.cn-beijing.aliyuncs.com"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := aliyunEndpoint(tt.input); got != tt.want {
+				t.Fatalf("aliyunEndpoint(%q) = %q, want %q", tt.input, got, tt.want)
+			}
+		})
+	}
+}
+
 // mustReadConfig 读取配置，失败时返回零值（不使测试失败）
 func mustReadConfig(t *testing.T, path string) config.CloudConfig {
 	t.Helper()
@@ -184,5 +204,36 @@ func TestAPIResponse_UnmarshalNumericCode(t *testing.T) {
 	}
 	if int(resp.Body.Data.WordCount) != 1 {
 		t.Errorf("WordCount 期望 1，得到 %d", int(resp.Body.Data.WordCount))
+	}
+}
+
+func TestValidateTranslateResponse(t *testing.T) {
+	tests := []struct {
+		name    string
+		result  APIResponse
+		wantErr bool
+	}{
+		{
+			name:   "success",
+			result: APIResponse{StatusCode: 200, Body: ResponseBody{Code: flexInt(200)}},
+		},
+		{
+			name:    "HTTP error",
+			result:  APIResponse{StatusCode: 503, Body: ResponseBody{Code: flexInt(200)}},
+			wantErr: true,
+		},
+		{
+			name:    "business error",
+			result:  APIResponse{StatusCode: 200, Body: ResponseBody{Code: flexInt(10010), Message: "invalid access key"}},
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateTranslateResponse(tt.result)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("validateTranslateResponse() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
 	}
 }
