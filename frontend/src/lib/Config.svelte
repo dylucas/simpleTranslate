@@ -28,24 +28,39 @@
   let connection = $state<Partial<Record<EngineId, ConnectionState>>>({});
   let modal = $state<HTMLElement>();
   let wasOpen = false;
+  const connectionRuns: Record<EngineId, number> = { tencent: 0, aliyun: 0 };
+
+  function resetConnectionTests(): void {
+    connectionRuns.tencent += 1;
+    connectionRuns.aliyun += 1;
+    connection = {};
+  }
 
   $effect(() => {
     if (open && !wasOpen) {
       wasOpen = true;
       draft = cloneConfig(config);
-      connection = {};
+      resetConnectionTests();
       message = "";
       void tick().then(() => modal?.focus());
-    } else if (!open) {
+    } else if (!open && wasOpen) {
       wasOpen = false;
+      resetConnectionTests();
     }
   });
 
   function updateService(engine: EngineId, key: keyof ServiceConfig, value: string): void {
     draft[engine] = { ...draft[engine], [key]: value };
+    connectionRuns[engine] += 1;
+    connection[engine] = undefined;
+  }
+
+  function close(): void {
+    if (!saving) onClose();
   }
 
   async function save(): Promise<void> {
+    if (saving) return;
     saving = true;
     message = "正在保存...";
     try {
@@ -60,21 +75,29 @@
   }
 
   async function test(engine: EngineId): Promise<void> {
+    const run = ++connectionRuns[engine];
     connection[engine] = { testing: true, ok: false, message: "" };
     try {
       await onTest(engine, { ...draft[engine] });
+      if (run !== connectionRuns[engine] || !open) return;
       connection[engine] = { testing: false, ok: true, message: "连接成功" };
     } catch (error) {
+      if (run !== connectionRuns[engine] || !open) return;
       const text = error instanceof Error ? error.message : String(error);
       connection[engine] = { testing: false, ok: false, message: text.replace(/^Error:\s*/, "") };
     }
   }
 
   function handleKeydown(event: KeyboardEvent): void {
+    if (saving) {
+      event.stopPropagation();
+      if (event.key === "Tab" || event.key === "Escape") event.preventDefault();
+      return;
+    }
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
-      onClose();
+      close();
       return;
     }
     if (event.key !== "Tab" || !modal) return;
@@ -93,14 +116,14 @@
 </script>
 
 {#if open}
-  <button class="backdrop" onclick={onClose} aria-label="关闭偏好设置"></button>
+  <button class="backdrop" onclick={close} disabled={saving} aria-label="关闭偏好设置"></button>
   <div class="modal" bind:this={modal} role="dialog" aria-modal="true" aria-labelledby="config-title" tabindex="-1" onkeydown={handleKeydown}>
     <header>
       <div class="title"><span><Settings size={20} /></span><div><h2 id="config-title">偏好设置</h2><small>翻译服务与工作区偏好</small></div></div>
-      <button class="icon-btn" onclick={onClose} aria-label="关闭偏好设置" aria-keyshortcuts={ARIA_SHORTCUTS.closePanel}><X size={18} /></button>
+      <button class="icon-btn" onclick={close} disabled={saving} aria-label="关闭偏好设置" aria-keyshortcuts={ARIA_SHORTCUTS.closePanel}><X size={18} /></button>
     </header>
 
-    <main>
+    <main inert={saving} aria-busy={saving}>
       <section class="settings-section">
         <h3><Cpu size={15} />核心偏好</h3>
         <label class="setting-row"><span><strong>默认翻译引擎</strong><small>单引擎模式和对照首选结果</small></span>
@@ -141,7 +164,7 @@
 
     <footer>
       <span role="status" aria-live="polite">{message}</span>
-      <div><button class="secondary" onclick={onClose}>取消</button><button class="primary" onclick={() => void save()} disabled={saving}>{#if saving}<RefreshCcw size={15} class="spin" />{:else}<Save size={15} />{/if}保存配置</button></div>
+      <div><button class="secondary" onclick={close} disabled={saving}>取消</button><button class="primary" onclick={() => void save()} disabled={saving}>{#if saving}<RefreshCcw size={15} class="spin" />{:else}<Save size={15} />{/if}保存配置</button></div>
     </footer>
   </div>
 {/if}

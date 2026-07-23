@@ -7,7 +7,7 @@ import {
   TranslateMulti,
   TranslateText,
 } from "../../wailsjs/go/main/App";
-import { ClipboardGetText, EventsOn } from "../../wailsjs/runtime/runtime";
+import { ClipboardGetText, ClipboardSetText, EventsOn } from "../../wailsjs/runtime/runtime";
 import { config as wailsConfig } from "../../wailsjs/go/models";
 import type {
   CloudConfig,
@@ -32,6 +32,7 @@ export interface DesktopBridge {
   translateMulti(request: MultiTranslateRequest): Promise<MultiTranslateResult>;
   onEngineResult(handler: (result: EngineTranslateResult) => void): () => void;
   getClipboardText(): Promise<string>;
+  setClipboardText(text: string): Promise<void>;
 }
 
 export const DEFAULT_CONFIG: CloudConfig = {
@@ -71,6 +72,9 @@ function createWailsBridge(): DesktopBridge {
     onEngineResult: (handler) =>
       EventsOn("translate:engine-result", (payload: EngineTranslateResult) => handler(payload)),
     getClipboardText: () => ClipboardGetText(),
+    async setClipboardText(text) {
+      if (!await ClipboardSetText(text)) throw new Error("clipboard write failed");
+    },
   };
 }
 
@@ -142,6 +146,10 @@ export function createMockBridge(initial: CloudConfig = DEFAULT_CONFIG): Desktop
     },
     async getClipboardText() {
       return "";
+    },
+    async setClipboardText(text) {
+      if (!navigator.clipboard?.writeText) throw new Error("clipboard unavailable");
+      await navigator.clipboard.writeText(text);
     },
   };
 }

@@ -3,7 +3,8 @@
   import { onDestroy, onMount, tick } from "svelte";
   import { desktopBridge } from "./lib/bridge";
   import { createClipboardWatcher } from "./lib/clipboard";
-  import { createConfigController } from "./lib/configController";
+  import { createConfigController, normalizeConfig } from "./lib/configController";
+  import { createHistoryPersistence } from "./lib/historyPersistence";
   import { langs, getSpeechLang } from "./lib/languages";
   import { ARIA_SHORTCUTS, createShortcutHandler } from "./lib/shortcuts";
   import { createSpeaker } from "./lib/speech";
@@ -24,11 +25,11 @@
   let showHistory = $state(false);
   let history = $state<HistoryEntry[]>([]);
   let suppressAuto = $state(false);
+  let skipAutoForInput: string | null = null;
   let copied = $state(false);
   let copiedEngines = $state<Partial<Record<EngineId, boolean>>>({});
   let speakingText = $state<string | null>(null);
   let inputElement: HTMLTextAreaElement;
-  let historySaveTimer: ReturnType<typeof setTimeout> | null = null;
   let lastPanelTrigger: HTMLElement | null = null;
   let queuedErrors: string[] = [];
   let controller: TranslateController;
@@ -38,13 +39,23 @@
     else queuedErrors.push(message);
   });
   let config = $derived($configController.value);
+  let configReady = $derived($configController.ready);
 
-  function scheduleHistorySave(): void {
-    if (historySaveTimer) clearTimeout(historySaveTimer);
-    historySaveTimer = setTimeout(() => {
-      void desktopBridge.saveHistory(history).catch(() => controller.showError("历史记录保存失败"));
-    }, 400);
+  $effect(() => {
+    if (!configReady) return;
+    source = config.sourceLanguage;
+    target = config.targetLanguage;
+  });
+
+  function persistConfig(operation: Promise<void>): void {
+    // The controller already rolls back and reports failures through onError.
+    void operation.catch(() => undefined);
   }
+
+  const historyPersistence = createHistoryPersistence(
+    (entries) => desktopBridge.saveHistory(entries),
+    () => controller.showError("历史记录保存失败"),
+  );
 
   controller = createTranslateController({
     bridge: desktopBridge,
@@ -57,12 +68,13 @@
     getHistory: () => history,
     setHistory: (update) => {
       history = update(history);
-      scheduleHistorySave();
+      historyPersistence.schedule(history);
     },
     setTarget: (next) => {
       if (target === next) return;
+      skipAutoForInput = input;
       target = next;
-      void configController.patch("targetLanguage", next);
+      persistConfig(configController.patch("targetLanguage", next));
     },
   });
   const translationState = controller.state;
@@ -117,12 +129,19 @@
 
   $effect(() => {
     const value = input;
-    if (config.autoTranslate && !suppressAuto && credentialsReady) {
+    const route = `${source}\u0000${target}`;
+    if (skipAutoForInput === value) {
+      controller.cancelAutoTranslate();
+      skipAutoForInput = null;
+    } else if (route && config.autoTranslate && !suppressAuto && credentialsReady) {
       controller.handleAutoTranslate(value);
+    } else {
+      controller.cancelAutoTranslate();
     }
   });
 
   function openPanel(panel: "config" | "history"): void {
+    if (panel === "config" && !configReady) return;
     lastPanelTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     showConfig = panel === "config";
     showHistory = panel === "history";
@@ -145,17 +164,18 @@
   function setLanguage(kind: "source" | "target", value: string): void {
     if (kind === "source") source = value;
     else target = value;
-    void configController.patch(kind === "source" ? "sourceLanguage" : "targetLanguage", value);
+    persistConfig(configController.patch(kind === "source" ? "sourceLanguage" : "targetLanguage", value));
   }
 
   function swapLanguages(): void {
+    if (!configReady) return;
     const resolved = source === "auto" ? translation.lastDetectedLang : source;
     if (!resolved) return;
     const nextSource = target;
     const nextTarget = resolved;
     source = nextSource;
     target = nextTarget;
-    void configController.save({ ...configController.snapshot(), sourceLanguage: nextSource, targetLanguage: nextTarget });
+    persistConfig(configController.save({ ...configController.snapshot(), sourceLanguage: nextSource, targetLanguage: nextTarget }));
   }
 
   function toggleCompareEngine(engine: EngineId): void {
@@ -163,7 +183,7 @@
     const next = selected.includes(engine)
       ? selected.length === 1 ? selected : selected.filter((item) => item !== engine)
       : [...selected, engine];
-    void configController.patch("compareEngines", next);
+    persistConfig(configController.patch("compareEngines", next));
   }
 
   function speak(text: string, language: string): void {
@@ -173,7 +193,8 @@
   async function copyText(text: string, engine?: EngineId): Promise<void> {
     if (!text) return;
     try {
-      await navigator.clipboard.writeText(text);
+      await desktopBridge.setClipboardText(text);
+      clipboardWatcher.setBaseline(text);
       if (engine) copiedEngines[engine] = true;
       else copied = true;
       setTimeout(() => {
@@ -195,7 +216,7 @@
     controller.setOutput("");
     source = nextSource;
     target = nextTarget;
-    void configController.save({ ...configController.snapshot(), sourceLanguage: nextSource, targetLanguage: nextTarget });
+    persistConfig(configController.save({ ...configController.snapshot(), sourceLanguage: nextSource, targetLanguage: nextTarget }));
     setTimeout(() => {
       suppressAuto = false;
       requestTranslation();
@@ -208,14 +229,24 @@
     void tick().then(() => inputElement?.focus());
   }
 
+  function clearInput(): void {
+    input = "";
+    controller.clear();
+  }
+
+  function toggleTheme(): void {
+    if (showConfig) return;
+    persistConfig(configController.patch("isDark", !config.isDark));
+  }
+
   const shortcuts = createShortcutHandler({
     onTranslate: requestTranslation,
     onFocusInput: focusInputFromShortcut,
-    onClearInput: () => (input = ""),
+    onClearInput: clearInput,
     onSwapLangs: swapLanguages,
     onToggleHistory: () => showHistory ? closePanels() : openPanel("history"),
     onToggleSettings: () => showConfig ? closePanels() : openPanel("config"),
-    onToggleTheme: () => void configController.patch("isDark", !config.isDark),
+    onToggleTheme: toggleTheme,
     onClosePanel: closePanels,
   }, {
     isPanelOpen: () => showConfig || showHistory,
@@ -225,11 +256,34 @@
     shortcuts(event);
   }
 
+  function restoreHistoryEntry(entry: HistoryEntry): void {
+    const route = normalizeConfig({
+      sourceLanguage: entry.source,
+      targetLanguage: entry.target,
+    });
+    const restored = {
+      ...entry,
+      source: route.sourceLanguage,
+      target: route.targetLanguage,
+    };
+    skipAutoForInput = restored.input;
+    input = restored.input;
+    source = restored.source;
+    target = restored.target;
+    persistConfig(configController.save({
+      ...configController.snapshot(),
+      sourceLanguage: restored.source,
+      targetLanguage: restored.target,
+    }));
+    controller.restore(restored);
+    closePanels();
+    void tick().then(() => {
+      if (skipAutoForInput === restored.input) skipAutoForInput = null;
+    });
+  }
+
   onMount(async () => {
     await configController.load();
-    const loaded = configController.snapshot();
-    source = loaded.sourceLanguage;
-    target = loaded.targetLanguage;
     try {
       history = await desktopBridge.loadHistory();
     } catch {
@@ -240,10 +294,10 @@
   });
 
   onDestroy(() => {
+    void historyPersistence.flush();
     controller.destroy();
     clipboardWatcher.stop();
     speaker.stop();
-    if (historySaveTimer) clearTimeout(historySaveTimer);
   });
 </script>
 
@@ -254,7 +308,7 @@
   <UtilityRail
     activePanel={showConfig ? "config" : showHistory ? "history" : null}
     isDark={config.isDark}
-    onTheme={() => void configController.patch("isDark", !config.isDark)}
+    onTheme={toggleTheme}
     onSettings={() => openPanel("config")}
     onHistory={() => openPanel("history")}
   />
@@ -265,10 +319,10 @@
       detectedSource={translation.lastDetectedLang} clipboardWatch={config.clipboardWatch}
       compareMode={config.compareMode} isProcessing={translation.isProcessing} {canTranslate} {unavailableReason}
       onSource={(value) => setLanguage("source", value)} onTarget={(value) => setLanguage("target", value)}
-      onEngine={(engine) => void configController.patch("defaultEngine", engine)}
-      onSwap={swapLanguages} onAuto={(value) => void configController.patch("autoTranslate", value)}
-      onClipboard={() => void configController.patch("clipboardWatch", !config.clipboardWatch)}
-      onCompare={() => void configController.patch("compareMode", !config.compareMode)} onTranslate={requestTranslation}
+      onEngine={(engine) => persistConfig(configController.patch("defaultEngine", engine))}
+      onSwap={swapLanguages} onAuto={(value) => persistConfig(configController.patch("autoTranslate", value))}
+      onClipboard={() => persistConfig(configController.patch("clipboardWatch", !config.clipboardWatch))}
+      onCompare={() => persistConfig(configController.patch("compareMode", !config.compareMode))} onTranslate={requestTranslation}
     />
 
     {#if credentialMessage}
@@ -291,7 +345,7 @@
           <div class="pane-actions">
             {#if input}
               <button class="icon-action" onclick={() => speak(input, source === "auto" ? (translation.lastDetectedLang || "en") : source)} aria-label="朗读原文" title="朗读原文">{#if speakingText === input}<Square size={13} />{:else}<Volume2 size={14} />{/if}</button>
-              <button class="icon-action" onclick={() => (input = "")} aria-label="清空原文" aria-keyshortcuts={ARIA_SHORTCUTS.clearInput} title="清空原文"><X size={14} /></button>
+              <button class="icon-action" onclick={clearInput} aria-label="清空原文" aria-keyshortcuts={ARIA_SHORTCUTS.clearInput} title="清空原文"><X size={14} /></button>
             {/if}
           </div>
         </footer>
@@ -323,7 +377,7 @@
   </main>
 
   <Config open={showConfig} {config} onClose={closePanels} onSave={(next) => configController.save(next)} onTest={(engine, service) => desktopBridge.testConnection(engine, service)} />
-  <History open={showHistory} {history} onClose={closePanels} onClear={() => { history = []; scheduleHistorySave(); }} onSelect={(entry) => { suppressAuto = true; input = entry.input; source = entry.source; target = entry.target; controller.restore(entry); closePanels(); setTimeout(() => (suppressAuto = false), 0); }} />
+  <History open={showHistory} {history} onClose={closePanels} onClear={() => { history = []; historyPersistence.schedule(history); }} onSelect={restoreHistoryEntry} />
 </div>
 
 <style>

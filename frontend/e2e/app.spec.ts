@@ -33,6 +33,14 @@ test("main translation workflow remains usable", async ({ page }) => {
   await expect(historyDialog.getByText("中文", { exact: true })).toBeVisible();
   await expect(page.getByText("hello", { exact: true })).toBeVisible();
 
+  if (await page.evaluate(() => matchMedia("(min-width: 1180px)").matches)) {
+    await expect.poll(() => page.evaluate(() => {
+      const drawer = document.querySelector<HTMLElement>(".drawer");
+      const main = document.querySelector<HTMLElement>(".main-content");
+      return Math.abs((main?.getBoundingClientRect().right ?? 0) - (drawer?.getBoundingClientRect().left ?? 0));
+    })).toBeLessThanOrEqual(1);
+  }
+
   await historySearch.fill("hello");
   await expect(historyDialog.getByText("1 / 1 条记录", { exact: true })).toBeVisible();
 

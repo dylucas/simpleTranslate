@@ -20,6 +20,7 @@ func main() {
 		MinWidth:  640,
 		MinHeight: 480,
 		Assets:    assets,
+		OnStartup: app.startup,
 		Bind: []interface{}{
 			app,
 		},

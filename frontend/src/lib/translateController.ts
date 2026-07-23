@@ -46,10 +46,12 @@ export interface TranslateController {
   state: Writable<TranslationState>;
   translate(): Promise<void>;
   handleAutoTranslate(value: string): void;
+  cancelAutoTranslate(): void;
   showError(error: unknown): void;
   dismissError(): void;
   retry(): void;
   setOutput(output: string): void;
+  clear(): void;
   restore(entry: HistoryEntry): void;
   destroy(): void;
 }
@@ -91,15 +93,32 @@ function errorCode(error: AnyErrorInput): TranslateErrorCode {
   return ErrorCodes.Unknown;
 }
 
+function isSuccessfulResult(result: EngineTranslateResult | undefined): result is EngineTranslateResult {
+  return Boolean(result?.text?.trim()) && !result?.error && !result?.errorCode;
+}
+
 export function createTranslateController(deps: TranslateControllerDeps): TranslateController {
   const state = writable<TranslationState>(initialState());
   let requestSequence = 0;
-  let pendingRetry = false;
-  let lastTranslatedInput = "";
+  let destroyed = false;
   let autoTimer: ReturnType<typeof setTimeout> | null = null;
   let errorTimer: ReturnType<typeof setTimeout> | null = null;
+  let activeRequestKey: string | null = null;
+
+  function currentRequestKey(): string {
+    const compareMode = deps.getCompareMode();
+    return JSON.stringify([
+      deps.getInput(),
+      deps.getSource(),
+      deps.getTarget(),
+      compareMode,
+      deps.getActiveEngine(),
+      compareMode ? deps.getCompareEngines() : [],
+    ]);
+  }
 
   function showError(error: unknown): void {
+    if (destroyed) return;
     const input = asErrorInput(error);
     const code = errorCode(input);
     const msg = formatErrorToToast(input);
@@ -130,8 +149,10 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
   }
 
   const unsubscribeEngineResult = deps.bridge.onEngineResult((payload) => {
+    if (destroyed) return;
     const current = get(state);
     if (!payload?.engine || payload.requestId !== current.activeRequestId) return;
+    if (activeRequestKey !== currentRequestKey()) return;
     if (!current.compareLoadingEngines[payload.engine]) return;
     state.update((value) => ({
       ...value,
@@ -141,24 +162,23 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
   });
 
   async function translate(): Promise<void> {
+    if (destroyed) return;
     const input = deps.getInput();
     if (!input.trim()) return;
     if (autoTimer) {
       clearTimeout(autoTimer);
       autoTimer = null;
     }
-    if (get(state).isProcessing) {
-      pendingRetry = true;
-      return;
-    }
+    if (get(state).isProcessing) return;
 
     const requestId = `${Date.now()}-${++requestSequence}`;
     const source = deps.getSource();
     const target = deps.getTarget();
     const compareMode = deps.getCompareMode();
     const engines = deps.getCompareEngines();
-    lastTranslatedInput = input;
-    pendingRetry = false;
+    const requestKey = currentRequestKey();
+    activeRequestKey = requestKey;
+    let responseApplied = false;
 
     state.update((current) => ({
       ...current,
@@ -180,22 +200,28 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
           target,
           engines,
         });
+        if (destroyed) return;
         if (response.requestId !== get(state).activeRequestId) return;
+        if (requestKey !== currentRequestKey()) return;
+        responseApplied = true;
         const results = response.results ?? {};
         const values = Object.values(results);
         const failed = values.filter((result) => result?.error || result?.errorCode);
         const preferred = results[deps.getActiveEngine()];
-        const firstSuccess = values.find((result) => result?.text && !result.error);
-        const output = preferred?.text || firstSuccess?.text || get(state).output;
+        const successful = values.filter(isSuccessfulResult);
+        const firstSuccess = successful[0];
+        const output = isSuccessfulResult(preferred) ? preferred.text : firstSuccess?.text || get(state).output;
+        const allFailed = successful.length === 0;
+        const hasFailures = successful.length < engines.length;
 
         state.update((current) => ({
           ...current,
           output,
           compareOutputs: results,
           compareLoadingEngines: {},
-          status: failed.length === values.length ? "翻译失败" : failed.length ? "部分引擎失败" : "完成",
+          status: allFailed ? "翻译失败" : hasFailures ? "部分引擎失败" : "完成",
         }));
-        if (failed.length === values.length && failed[0]) showError(failed[0]);
+        if (allFailed) showError(failed[0] ?? "翻译服务未返回结果");
         else addHistory(input, output, source, response.target || target);
 
         if (source === "auto" && response.autoSrc) {
@@ -213,10 +239,13 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
           target,
           engine: deps.getActiveEngine(),
         });
+        if (destroyed) return;
         if (response.requestId !== get(state).activeRequestId) return;
-        if (response.errorCode || response.error) {
+        if (requestKey !== currentRequestKey()) return;
+        responseApplied = true;
+        if (response.errorCode || response.error || !response.text.trim()) {
           state.update((current) => ({ ...current, status: "翻译失败" }));
-          showError(response);
+          showError(response.errorCode || response.error ? response : "翻译服务未返回结果");
         } else {
           deps.setTarget(response.target || target);
           state.update((current) => ({
@@ -236,50 +265,80 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
         }
       }
     } catch (error) {
+      if (destroyed) return;
       if (requestId !== get(state).activeRequestId) return;
+      if (requestKey !== currentRequestKey()) return;
+      responseApplied = true;
       state.update((current) => ({ ...current, status: "翻译失败" }));
       showError(error);
     } finally {
-      if (requestId === get(state).activeRequestId) {
-        state.update((current) => ({ ...current, isProcessing: false, compareLoadingEngines: {} }));
-      }
-      const latest = deps.getInput();
-      if (pendingRetry && latest.trim() && latest !== lastTranslatedInput) {
-        pendingRetry = false;
-        void translate();
+      if (!destroyed) {
+        if (requestId === get(state).activeRequestId) {
+          state.update((current) => ({ ...current, isProcessing: false, compareLoadingEngines: {} }));
+          activeRequestKey = null;
+        }
+        const latest = deps.getInput();
+        if (!responseApplied && latest.trim() && requestKey !== currentRequestKey()) {
+          void translate();
+        }
       }
     }
   }
 
   function handleAutoTranslate(value: string): void {
+    if (destroyed) return;
     if (autoTimer) clearTimeout(autoTimer);
     if (!value.trim()) return;
     autoTimer = setTimeout(() => {
+      autoTimer = null;
       if (value === deps.getInput()) void translate();
     }, AUTO_TRANSLATE_DELAY);
+  }
+
+  function cancelAutoTranslate(): void {
+    if (autoTimer) clearTimeout(autoTimer);
+    autoTimer = null;
   }
 
   return {
     state,
     translate,
     handleAutoTranslate,
+    cancelAutoTranslate,
     showError,
     dismissError,
     retry: () => {
       dismissError();
       void translate();
     },
-    setOutput: (output) => state.update((current) => ({ ...current, output })),
-    restore: (entry) => state.update((current) => ({
-      ...current,
-      output: entry.output,
-      compareOutputs: {},
-      status: "已从历史恢复",
-    })),
+    setOutput: (output) => {
+      if (!destroyed) state.update((current) => ({ ...current, output }));
+    },
+    clear: () => {
+      if (destroyed) return;
+      cancelAutoTranslate();
+      if (errorTimer) clearTimeout(errorTimer);
+      errorTimer = null;
+      activeRequestKey = null;
+      state.set(initialState());
+    },
+    restore: (entry) => {
+      if (destroyed) return;
+      state.update((current) => ({
+        ...current,
+        output: entry.output,
+        compareOutputs: {},
+        autoDetectLang: "自动识别",
+        lastDetectedLang: "",
+        status: "已从历史恢复",
+      }));
+    },
     destroy: () => {
+      destroyed = true;
       unsubscribeEngineResult();
       if (autoTimer) clearTimeout(autoTimer);
       if (errorTimer) clearTimeout(errorTimer);
+      activeRequestKey = null;
     },
   };
 }

@@ -19,6 +19,8 @@ import (
 type App struct {
 	ctx     context.Context
 	dataDir string
+	// eventEmit is injectable for tests; production emits through the Wails runtime.
+	eventEmit func(EngineTranslateResult)
 	// 翻译结果缓存：key = engine|source|target|text，避免重复调用 API
 	translateCache *lruCache
 	// 语种识别缓存：key = engine|text，同一文本不重复检测
@@ -107,13 +109,19 @@ type HistoryEntry struct {
 // 前端总能拿到结构化错误用于差异化提示与重试策略。
 func (a *App) TranslateText(req TranslateRequest) TranslateResult {
 	text, source, target, engine := req.Text, req.Source, req.Target, req.Engine
-	empty := TranslateResult{RequestID: req.RequestID, Source: source, Target: target}
 	engine = strings.ToLower(strings.TrimSpace(engine))
+	source = normalizeLanguageCode(source)
+	target = normalizeLanguageCode(target)
+	empty := TranslateResult{RequestID: req.RequestID, Source: source, Target: target}
 	if strings.TrimSpace(text) == "" {
 		return translateResultError(empty, newTranslateError(ErrCodeInvalidInput, engine, "输入文本为空", nil))
 	}
 	if !isSupportedEngine(engine) {
 		return translateResultError(empty, newTranslateError(ErrCodeInvalidInput, engine, "不支持的翻译引擎", nil))
+	}
+	if err := validateLanguageRoute(source, target); err != nil {
+		err.Engine = engine
+		return translateResultError(empty, err)
 	}
 	src := source
 
@@ -175,6 +183,37 @@ func translateResultError(result TranslateResult, err *TranslateError) Translate
 
 func isSupportedEngine(engine string) bool {
 	return engine == "tencent" || engine == "aliyun"
+}
+
+func normalizeLanguageCode(code string) string {
+	code = strings.ToLower(strings.TrimSpace(code))
+	switch code {
+	case "ja":
+		return "jp"
+	case "ko":
+		return "kr"
+	default:
+		return code
+	}
+}
+
+func isSupportedLanguage(code string) bool {
+	switch code {
+	case "zh", "en", "jp", "kr", "fr", "de", "ru", "es":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateLanguageRoute(source, target string) *TranslateError {
+	if source != "" && source != "auto" && !isSupportedLanguage(source) {
+		return newTranslateError(ErrCodeInvalidInput, "", "不支持的源语言", nil)
+	}
+	if !isSupportedLanguage(target) {
+		return newTranslateError(ErrCodeInvalidInput, "", "不支持的目标语言", nil)
+	}
+	return nil
 }
 
 func engineFallbackOrder(engine string) []string {
@@ -259,12 +298,14 @@ func (a *App) detectLanguageBestEffort(text string, engines []string) (string, e
 		} else {
 			lang, err = translate.DetectLanguageWithConfig(text, cfg.Tencent)
 		}
-		if err == nil && lang != "" {
+		if err == nil && isSupportedLanguage(lang) {
 			a.detectCache.set(cacheKey(e, text), lang)
 			return lang, nil
 		}
 		if err != nil {
 			engineErrors = append(engineErrors, fmt.Errorf("%s: %w", e, err))
+		} else if lang != "" {
+			engineErrors = append(engineErrors, fmt.Errorf("%s: 不支持的识别结果 %q", e, lang))
 		} else {
 			engineErrors = append(engineErrors, fmt.Errorf("%s: 未返回识别结果", e))
 		}
@@ -283,11 +324,17 @@ const engineTimeout = 30 * time.Second
 
 func (a *App) TranslateMulti(req MultiTranslateRequest) MultiTranslateResult {
 	text, source, target, engines := req.Text, req.Source, req.Target, req.Engines
+	source = normalizeLanguageCode(source)
+	target = normalizeLanguageCode(target)
 	engines = normalizeEngines(engines)
 	src := source
 	emptyRes := MultiTranslateResult{RequestID: req.RequestID, Source: source, Target: target, Results: map[string]EngineTranslateResult{}}
 	if strings.TrimSpace(text) == "" {
 		err := newTranslateError(ErrCodeInvalidInput, "", "输入文本为空", nil)
+		emptyRes.Results = engineErrorResults(req.RequestID, engines, err)
+		return emptyRes
+	}
+	if err := validateLanguageRoute(source, target); err != nil {
 		emptyRes.Results = engineErrorResults(req.RequestID, engines, err)
 		return emptyRes
 	}
@@ -324,6 +371,7 @@ func (a *App) TranslateMulti(req MultiTranslateRequest) MultiTranslateResult {
 				mu.Lock()
 				results[engine] = r
 				mu.Unlock()
+				a.emitEngineResult(r)
 				return
 			}
 
@@ -341,6 +389,8 @@ func (a *App) TranslateMulti(req MultiTranslateRequest) MultiTranslateResult {
 				done <- outcome{out, err}
 			}()
 
+			timer := time.NewTimer(engineTimeout)
+			defer timer.Stop()
 			select {
 			case o := <-done:
 				r.Text = o.text
@@ -352,7 +402,7 @@ func (a *App) TranslateMulti(req MultiTranslateRequest) MultiTranslateResult {
 					// 仅缓存成功结果
 					a.translateCache.set(ck, o.text)
 				}
-			case <-time.After(engineTimeout):
+			case <-timer.C:
 				// 底层 HTTP/SDK 已设 30s 超时，内层 goroutine 会自然退出，无需显式取消
 				te := newTranslateError(ErrCodeTimeout, engine, "翻译超时，请稍后重试", nil)
 				r.Error = te.Message
@@ -364,9 +414,7 @@ func (a *App) TranslateMulti(req MultiTranslateRequest) MultiTranslateResult {
 			mu.Unlock()
 
 			// 流式推送：单引擎完成后立即触发事件，前端可独立渲染与 loading
-			if a.ctx != nil {
-				runtime.EventsEmit(a.ctx, "translate:engine-result", r)
-			}
+			a.emitEngineResult(r)
 		}()
 	}
 	wg.Wait()
@@ -379,6 +427,16 @@ func (a *App) TranslateMulti(req MultiTranslateRequest) MultiTranslateResult {
 		Results:   results,
 	}
 	return res
+}
+
+func (a *App) emitEngineResult(result EngineTranslateResult) {
+	if a.eventEmit != nil {
+		a.eventEmit(result)
+		return
+	}
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "translate:engine-result", result)
+	}
 }
 
 func engineErrorResults(requestID string, engines []string, err *TranslateError) map[string]EngineTranslateResult {
@@ -435,6 +493,12 @@ func (a *App) LoadHistory() ([]HistoryEntry, error) {
 	var entries []HistoryEntry
 	if err := json.Unmarshal(data, &entries); err != nil {
 		return nil, err
+	}
+	if entries == nil {
+		return []HistoryEntry{}, nil
+	}
+	if len(entries) > 200 {
+		entries = entries[:200]
 	}
 	return entries, nil
 }

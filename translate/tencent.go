@@ -99,7 +99,10 @@ func chatCompletionWithAPIKey(prompt, apiKey string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	data, _ := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("读取混元 API 响应失败: %w", err)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("混元 API 调用失败: HTTP %d: %s", resp.StatusCode, string(data))
 	}
@@ -179,7 +182,19 @@ func detectLanguage(text string, complete func(string) (string, error)) (string,
 	if err != nil {
 		return "", err
 	}
-	return normalizeLangCode(out), nil
+	lang, err := validateDetectedLanguage(out)
+	if err != nil {
+		return "", err
+	}
+	return lang, nil
+}
+
+func validateDetectedLanguage(raw string) (string, error) {
+	lang := normalizeLangCode(raw)
+	if _, ok := langCodeToName[lang]; !ok {
+		return "", fmt.Errorf("不支持的语言识别结果: %q", strings.TrimSpace(raw))
+	}
+	return lang, nil
 }
 
 // Translate 使用 hy-mt2-pro 翻译
@@ -203,5 +218,13 @@ func translateText(text, source, target string, complete func(string) (string, e
 		"将以下文本翻译为 %s，注意只需要输出翻译后的结果，不要额外解释：\n%s",
 		targetName, text,
 	)
-	return complete(prompt)
+	result, err := complete(prompt)
+	if err != nil {
+		return "", err
+	}
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return "", fmt.Errorf("混元 API 返回空译文")
+	}
+	return result, nil
 }

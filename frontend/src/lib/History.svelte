@@ -130,7 +130,7 @@
     {/if}
 
     <div class="history-list">
-      {#each filtered as item (item.id)}
+      {#each filtered as item (item)}
         <button class="history-item" onclick={() => onSelect(item)}>
           <span class="meta"><span class="route"><span>{languageLabel(item.source)}</span><ArrowRight size={11} /><span>{languageLabel(item.target)}</span></span><time>{item.time}</time></span>
           <span class="entry-content"><strong>{item.input}</strong><span class="output">{item.output}</span></span>

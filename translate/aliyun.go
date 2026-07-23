@@ -90,6 +90,19 @@ func aliyunEndpoint(regionOrEndpoint string) string {
 	return "mt." + value + ".aliyuncs.com"
 }
 
+// aliyunLanguageCode converts the application's legacy language codes to the
+// ISO codes expected by the Aliyun translation API.
+func aliyunLanguageCode(code string) string {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "jp":
+		return "ja"
+	case "kr":
+		return "ko"
+	default:
+		return strings.ToLower(strings.TrimSpace(code))
+	}
+}
+
 // CreateApiInfo 构造阿里云 RPC 接口请求参数
 func CreateApiInfo(apiName string) *openapi.Params {
 	return &openapi.Params{
@@ -210,7 +223,7 @@ func getDetectLanguage(text string, client *openapi.Client) (string, error) {
 		return "", fmt.Errorf("阿里云语言识别失败: HTTP %d", result.StatusCode)
 	}
 
-	return result.Body.DetectedLanguage, nil
+	return validateDetectedLanguage(result.Body.DetectedLanguage)
 }
 
 // TranslateGeneral 调用阿里云通用翻译接口
@@ -236,8 +249,8 @@ func translateGeneral(text string, source string, target string, client *openapi
 	params := CreateApiInfo("TranslateGeneral")
 	body := map[string]interface{}{}
 	body["FormatType"] = tea.String("text")
-	body["SourceLanguage"] = tea.String(source)
-	body["TargetLanguage"] = tea.String(target)
+	body["SourceLanguage"] = tea.String(aliyunLanguageCode(source))
+	body["TargetLanguage"] = tea.String(aliyunLanguageCode(target))
 	body["SourceText"] = tea.String(text)
 	body["Scene"] = tea.String("general")
 	// 显式设置读写超时，与外层 30s 超时保持一致，避免 SDK 调用 Hang 导致 goroutine 泄漏
@@ -279,6 +292,9 @@ func validateTranslateResponse(result APIResponse) error {
 			return fmt.Errorf("阿里云翻译失败: Code %d: %s", result.Body.Code, result.Body.Message)
 		}
 		return fmt.Errorf("阿里云翻译失败: Code %d", result.Body.Code)
+	}
+	if strings.TrimSpace(result.Body.Data.Translated) == "" {
+		return fmt.Errorf("阿里云翻译返回空译文")
 	}
 	return nil
 }

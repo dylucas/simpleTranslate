@@ -83,3 +83,27 @@ func TestDetectLanguage_Whitespace(t *testing.T) {
 		t.Error("纯空白文本应返回错误，得到 nil")
 	}
 }
+
+func TestDetectLanguageRejectsUnsupportedResponse(t *testing.T) {
+	_, err := detectLanguage("hello", func(string) (string, error) {
+		return "xx", nil
+	})
+	if err == nil {
+		t.Fatal("不支持的识别结果应返回错误")
+	}
+}
+
+func TestValidateDetectedLanguageRejectsEmptyResponse(t *testing.T) {
+	if _, err := validateDetectedLanguage(""); err == nil {
+		t.Fatal("空识别结果应返回错误")
+	}
+}
+
+func TestTranslateTextRejectsEmptyResponse(t *testing.T) {
+	_, err := translateText("hello", "en", "zh", func(string) (string, error) {
+		return "   ", nil
+	})
+	if err == nil {
+		t.Fatal("空译文应返回错误")
+	}
+}

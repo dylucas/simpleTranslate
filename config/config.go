@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"simpleTranslate/internal/storage"
+	"strings"
 	"sync"
 )
 
@@ -59,12 +60,8 @@ func normalizeConfig(cfg CloudConfig) CloudConfig {
 	if cfg.DefaultEngine != "tencent" && cfg.DefaultEngine != "aliyun" {
 		cfg.DefaultEngine = "tencent"
 	}
-	if cfg.SourceLanguage == "" {
-		cfg.SourceLanguage = "auto"
-	}
-	if cfg.TargetLanguage == "" {
-		cfg.TargetLanguage = "zh"
-	}
+	cfg.SourceLanguage = normalizeLanguage(cfg.SourceLanguage, true, "auto")
+	cfg.TargetLanguage = normalizeLanguage(cfg.TargetLanguage, false, "zh")
 	if cfg.Aliyun.Region == "" {
 		cfg.Aliyun.Region = "cn-hangzhou"
 	}
@@ -81,6 +78,25 @@ func normalizeConfig(cfg CloudConfig) CloudConfig {
 	}
 	cfg.CompareEngines = engines
 	return cfg
+}
+
+func normalizeLanguage(value string, allowAuto bool, fallback string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch value {
+	case "ja":
+		value = "jp"
+	case "ko":
+		value = "kr"
+	}
+	if allowAuto && value == "auto" {
+		return value
+	}
+	switch value {
+	case "zh", "en", "jp", "kr", "fr", "de", "ru", "es":
+		return value
+	default:
+		return fallback
+	}
 }
 
 // 进程内配置缓存：避免每次翻译都从磁盘读取，SaveConfig 时同步刷新。

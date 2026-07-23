@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -88,6 +89,39 @@ func TestTranslateTextRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestTranslateTextValidatesAndNormalizesLanguages(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	for _, tt := range []struct {
+		name   string
+		source string
+		target string
+	}{
+		{name: "missing target", source: "en", target: ""},
+		{name: "invalid source", source: "unknown", target: "zh"},
+		{name: "invalid target", source: "en", target: "unknown"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			res := app.TranslateText(TranslateRequest{
+				RequestID: "invalid-language",
+				Text:      "hello",
+				Source:    tt.source,
+				Target:    tt.target,
+				Engine:    "tencent",
+			})
+			if res.ErrorCode != ErrCodeInvalidInput {
+				t.Fatalf("ErrorCode = %q, want %q", res.ErrorCode, ErrCodeInvalidInput)
+			}
+		})
+	}
+
+	if got := normalizeLanguageCode(" JA "); got != "jp" {
+		t.Fatalf("normalizeLanguageCode(JA) = %q, want jp", got)
+	}
+	if got := normalizeLanguageCode("KO"); got != "kr" {
+		t.Fatalf("normalizeLanguageCode(KO) = %q, want kr", got)
+	}
+}
+
 func TestTranslateMultiRejectsEmptyInput(t *testing.T) {
 	res := NewAppWithDataDir(t.TempDir()).TranslateMulti(MultiTranslateRequest{RequestID: "multi-empty", Text: "  ", Source: "en", Target: "zh", Engines: []string{"tencent", "aliyun"}})
 	if res.RequestID != "multi-empty" {
@@ -100,6 +134,44 @@ func TestTranslateMultiRejectsEmptyInput(t *testing.T) {
 		if result.ErrorCode != ErrCodeInvalidInput {
 			t.Fatalf("%s ErrorCode = %q, want %q", engine, result.ErrorCode, ErrCodeInvalidInput)
 		}
+	}
+}
+
+func TestTranslateMultiRejectsInvalidLanguageRoute(t *testing.T) {
+	res := NewAppWithDataDir(t.TempDir()).TranslateMulti(MultiTranslateRequest{
+		RequestID: "multi-invalid-language",
+		Text:      "hello",
+		Source:    "en",
+		Target:    "",
+		Engines:   []string{"tencent"},
+	})
+	result := res.Results["tencent"]
+	if result.ErrorCode != ErrCodeInvalidInput {
+		t.Fatalf("ErrorCode = %q, want %q", result.ErrorCode, ErrCodeInvalidInput)
+	}
+}
+
+func TestTranslateMultiEmitsCachedEngineResults(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	app.translateCache.set(cacheKey("tencent", "en", "zh", "hello"), "cached result")
+	var emitted []EngineTranslateResult
+	app.eventEmit = func(result EngineTranslateResult) {
+		emitted = append(emitted, result)
+	}
+
+	result := app.TranslateMulti(MultiTranslateRequest{
+		RequestID: "cached-stream",
+		Text:      "hello",
+		Source:    "en",
+		Target:    "zh",
+		Engines:   []string{"tencent"},
+	})
+
+	if result.Results["tencent"].Text != "cached result" {
+		t.Fatalf("cached result = %q, want cached result", result.Results["tencent"].Text)
+	}
+	if len(emitted) != 1 || emitted[0].Text != "cached result" {
+		t.Fatalf("cached engine should emit one streaming result, got %#v", emitted)
 	}
 }
 
@@ -205,6 +277,44 @@ func TestLoadHistory_InvalidJSON(t *testing.T) {
 	if err == nil {
 		t.Error("损坏 JSON 期望返回错误，得到 nil")
 	}
+}
+
+func TestLoadHistory_NormalizesNullAndOversizedFiles(t *testing.T) {
+	t.Run("null", func(t *testing.T) {
+		app := NewAppWithDataDir(t.TempDir())
+		if err := os.WriteFile(app.getHistoryPath(), []byte("null"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := app.LoadHistory()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == nil || len(got) != 0 {
+			t.Fatalf("null history should become a non-nil empty slice, got %#v", got)
+		}
+	})
+
+	t.Run("oversized", func(t *testing.T) {
+		app := NewAppWithDataDir(t.TempDir())
+		entries := make([]HistoryEntry, 201)
+		for i := range entries {
+			entries[i].ID = int64(i)
+		}
+		data, err := json.Marshal(entries)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(app.getHistoryPath(), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := app.LoadHistory()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 200 {
+			t.Fatalf("oversized history should be capped at 200 entries, got %d", len(got))
+		}
+	})
 }
 
 // TestGetHistoryPath_CreatesDir 历史路径所在目录会被自动创建

@@ -77,4 +77,16 @@ describe("history drawer", () => {
     await fireEvent.keyDown(screen.getByRole("dialog", { name: "历史记录" }), { key: "Escape" });
     expect(props.onClose).toHaveBeenCalledOnce();
   });
+
+  it("renders legacy entries that have duplicate ids", () => {
+    renderHistory({
+      history: [
+        { ...history[0], id: 1 },
+        { ...history[1], id: 1 },
+      ],
+    });
+
+    expect(screen.getByText("hello world")).toBeInTheDocument();
+    expect(screen.getByText("再见")).toBeInTheDocument();
+  });
 });

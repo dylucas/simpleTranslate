@@ -154,6 +154,18 @@ func TestGetConfig_MigratesLegacyFields(t *testing.T) {
 	}
 }
 
+func TestNormalizeConfigLanguages(t *testing.T) {
+	cfg := normalizeConfig(CloudConfig{SourceLanguage: " JA ", TargetLanguage: "KO"})
+	if cfg.SourceLanguage != "jp" || cfg.TargetLanguage != "kr" {
+		t.Fatalf("language aliases were not normalized: source=%q target=%q", cfg.SourceLanguage, cfg.TargetLanguage)
+	}
+
+	cfg = normalizeConfig(CloudConfig{SourceLanguage: "invalid", TargetLanguage: ""})
+	if cfg.SourceLanguage != "auto" || cfg.TargetLanguage != "zh" {
+		t.Fatalf("invalid languages did not fall back: source=%q target=%q", cfg.SourceLanguage, cfg.TargetLanguage)
+	}
+}
+
 // TestSaveConfig_UpdatesCache 保存后立即读取应反映新值
 func TestSaveConfig_UpdatesCache(t *testing.T) {
 	InvalidateCache()
