@@ -1,6 +1,9 @@
 package translate
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestNormalizeLangCode 验证模型返回的各种语种代码/名称归一化
 func TestNormalizeLangCode(t *testing.T) {
@@ -90,6 +93,45 @@ func TestDetectLanguageRejectsUnsupportedResponse(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("不支持的识别结果应返回错误")
+	}
+}
+
+func TestDetectLanguageIgnoresURLs(t *testing.T) {
+	const (
+		text = "To develop in the browser and call your bound Go methods from Javascript, navigate to: http://localhost:34115"
+		url  = "http://localhost:34115"
+	)
+
+	var prompt string
+	got, err := detectLanguage(text, func(value string) (string, error) {
+		prompt = value
+		return "en", nil
+	})
+	if err != nil {
+		t.Fatalf("detectLanguage returned error: %v", err)
+	}
+	if got != "en" {
+		t.Fatalf("detectLanguage returned %q, want en", got)
+	}
+	if strings.Contains(prompt, url) {
+		t.Fatalf("language detection prompt should omit URL %q: %s", url, prompt)
+	}
+	if !strings.Contains(prompt, "To develop in the browser") {
+		t.Fatalf("language detection prompt lost natural-language text: %s", prompt)
+	}
+}
+
+func TestDetectLanguageKeepsURLOnlyInputValid(t *testing.T) {
+	const url = "https://localhost:34115"
+	var prompt string
+	if _, err := detectLanguage(url, func(value string) (string, error) {
+		prompt = value
+		return "en", nil
+	}); err != nil {
+		t.Fatalf("URL-only input should still reach the detector: %v", err)
+	}
+	if !strings.Contains(prompt, url) {
+		t.Fatalf("URL-only input should not produce an empty detector prompt: %s", prompt)
 	}
 }
 

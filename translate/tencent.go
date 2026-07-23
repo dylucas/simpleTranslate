@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,6 +19,12 @@ const hunyuanModel = "hy-mt2-pro"
 
 // httpClient 复用连接；30s 超时兼顾响应速度与稳定性
 var httpClient = &http.Client{Timeout: 30 * time.Second}
+
+// URLs are language-neutral tokens, but the model can let their Latin host,
+// protocol, and port characters influence language detection. Remove them
+// from the detection sample while leaving the original text untouched for
+// translation.
+var languageDetectionURLPattern = regexp.MustCompile(`(?i)(?:https?://|ftp://|www\.)[^\s<>"'，。！？；：、]+`)
 
 // langCodeToName 将应用内部语种代码映射为 hy-mt2-pro 期望的中文目标语种名
 var langCodeToName = map[string]string{
@@ -174,9 +181,15 @@ func detectLanguage(text string, complete func(string) (string, error)) (string,
 	if text == "" {
 		return "", fmt.Errorf("空文本")
 	}
+	detectionText := languageDetectionURLPattern.ReplaceAllString(text, " ")
+	if strings.TrimSpace(detectionText) == "" {
+		// Keep URL-only input valid for the remote detector. There is no natural
+		// language to infer, but sending an empty sample would be rejected here.
+		detectionText = text
+	}
 	prompt := fmt.Sprintf(
-		"请只回复以下文本对应的语言代码（只能从 zh/en/jp/kr/fr/de/ru/es 中选择一个，不要输出任何其他内容、不要标点）：\n%s",
-		text,
+		"请判断以下文本中自然语言主体的语言，忽略 URL/链接、代码、变量名、数字和标点；若有多种语言，以占主要内容的语言为准。只回复语言代码（只能从 zh/en/jp/kr/fr/de/ru/es 中选择一个，不要输出任何其他内容、不要标点）：\n%s",
+		detectionText,
 	)
 	out, err := complete(prompt)
 	if err != nil {
