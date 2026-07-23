@@ -4,6 +4,7 @@ import {
   SaveConfig,
   SaveHistory,
   TestConnection,
+  CancelTranslation,
   TranslateMulti,
   TranslateText,
 } from "../../wailsjs/go/main/App";
@@ -30,6 +31,7 @@ export interface DesktopBridge {
   testConnection(engine: EngineId, service: ServiceConfig): Promise<void>;
   translateText(request: TranslateRequest): Promise<TranslateResult>;
   translateMulti(request: MultiTranslateRequest): Promise<MultiTranslateResult>;
+  cancelTranslation(requestId: string): Promise<boolean>;
   onEngineResult(handler: (result: EngineTranslateResult) => void): () => void;
   getClipboardText(): Promise<string>;
   setClipboardText(text: string): Promise<void>;
@@ -69,6 +71,7 @@ function createWailsBridge(): DesktopBridge {
     testConnection: (engine, service) => TestConnection(engine, service),
     translateText: (request) => TranslateText(request) as Promise<TranslateResult>,
     translateMulti: (request) => TranslateMulti(request) as Promise<MultiTranslateResult>,
+    cancelTranslation: (requestId) => CancelTranslation(requestId),
     onEngineResult: (handler) =>
       EventsOn("translate:engine-result", (payload: EngineTranslateResult) => handler(payload)),
     getClipboardText: () => ClipboardGetText(),
@@ -90,6 +93,7 @@ function mockTranslation(text: string, target: string): string {
 export function createMockBridge(initial: CloudConfig = DEFAULT_CONFIG): DesktopBridge {
   let config = cloneConfig(initial);
   let history: HistoryEntry[] = [];
+  const cancelledRequests = new Set<string>();
   const handlers = new Set<(result: EngineTranslateResult) => void>();
 
   return {
@@ -113,6 +117,17 @@ export function createMockBridge(initial: CloudConfig = DEFAULT_CONFIG): Desktop
       if (!valid) throw new Error("请先填写完整凭据");
     },
     async translateText(request) {
+      if (cancelledRequests.has(request.requestId)) {
+        return {
+          requestId: request.requestId,
+          source: request.source,
+          autoSrc: request.source === "auto" ? "en" : request.source,
+          target: request.target,
+          text: "",
+          error: "请求已取消",
+          errorCode: "cancelled",
+        };
+      }
       return {
         requestId: request.requestId,
         source: request.source,
@@ -122,6 +137,21 @@ export function createMockBridge(initial: CloudConfig = DEFAULT_CONFIG): Desktop
       };
     },
     async translateMulti(request) {
+      if (cancelledRequests.has(request.requestId)) {
+        return {
+          requestId: request.requestId,
+          source: request.source,
+          autoSrc: request.source === "auto" ? "en" : request.source,
+          target: request.target,
+          results: Object.fromEntries(request.engines.map((engine) => [engine, {
+            requestId: request.requestId,
+            engine,
+            text: "",
+            error: "请求已取消",
+            errorCode: "cancelled",
+          }])) as Partial<Record<EngineId, EngineTranslateResult>>,
+        };
+      }
       const results: Partial<Record<EngineId, EngineTranslateResult>> = {};
       for (const engine of request.engines) {
         const result: EngineTranslateResult = {
@@ -139,6 +169,11 @@ export function createMockBridge(initial: CloudConfig = DEFAULT_CONFIG): Desktop
         target: request.target,
         results,
       };
+    },
+    async cancelTranslation(requestId) {
+      if (!requestId) return false;
+      cancelledRequests.add(requestId);
+      return true;
     },
     onEngineResult(handler) {
       handlers.add(handler);

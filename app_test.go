@@ -1,14 +1,95 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
+	"time"
 
 	"simpleTranslate/config"
 )
+
+func TestCancelTranslationCancelsRegisteredRequest(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	ctx, finish := app.beginTranslation("cancel-me")
+	done := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		close(done)
+	}()
+
+	if !app.CancelTranslation("cancel-me") {
+		t.Fatal("CancelTranslation should find the active request")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("request context was not cancelled")
+	}
+	finish()
+	if app.CancelTranslation("cancel-me") {
+		t.Fatal("a finished request should no longer be cancellable")
+	}
+}
+
+func TestTranslateTextCancellationSkipsCache(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	started := make(chan struct{})
+	app.translateInvoke = func(ctx context.Context, _, _, _, _ string) (string, error) {
+		close(started)
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	resultCh := make(chan TranslateResult, 1)
+	go func() {
+		resultCh <- app.TranslateText(TranslateRequest{RequestID: "cancel-text", Text: "hello", Source: "en", Target: "zh", Engine: "tencent"})
+	}()
+	<-started
+	if !app.CancelTranslation("cancel-text") {
+		t.Fatal("expected active translation to be cancellable")
+	}
+	result := <-resultCh
+	if result.ErrorCode != ErrCodeCancelled {
+		t.Fatalf("ErrorCode = %q, want %q", result.ErrorCode, ErrCodeCancelled)
+	}
+	if app.translateCache.len() != 0 {
+		t.Fatalf("cancelled translation should not populate cache, got %d entries", app.translateCache.len())
+	}
+}
+
+func TestTranslateMultiCancellationSkipsEventsAndCache(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	started := make(chan struct{})
+	app.translateInvoke = func(ctx context.Context, _, _, _, _ string) (string, error) {
+		close(started)
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	emitted := 0
+	app.eventEmit = func(EngineTranslateResult) { emitted++ }
+	resultCh := make(chan MultiTranslateResult, 1)
+	go func() {
+		resultCh <- app.TranslateMulti(MultiTranslateRequest{RequestID: "cancel-multi", Text: "hello", Source: "en", Target: "zh", Engines: []string{"tencent"}})
+	}()
+	<-started
+	if !app.CancelTranslation("cancel-multi") {
+		t.Fatal("expected active multi translation to be cancellable")
+	}
+	result := <-resultCh
+	engineResult := result.Results["tencent"]
+	if engineResult.ErrorCode != ErrCodeCancelled {
+		t.Fatalf("engine ErrorCode = %q, want %q", engineResult.ErrorCode, ErrCodeCancelled)
+	}
+	if emitted != 0 {
+		t.Fatalf("cancelled multi translation emitted %d events", emitted)
+	}
+	if app.translateCache.len() != 0 {
+		t.Fatalf("cancelled multi translation should not populate cache, got %d entries", app.translateCache.len())
+	}
+}
 
 // TestNormalizeEngines 验证引擎列表归一化：去重、小写、过滤非法值、空列表兜底
 func TestNormalizeEngines(t *testing.T) {

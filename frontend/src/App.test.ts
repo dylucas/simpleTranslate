@@ -94,6 +94,37 @@ describe("standalone app", () => {
     expect(setClipboardText).toHaveBeenCalledWith("你好");
   });
 
+  it("exposes an immediate cancel action for an in-flight translation", async () => {
+    await desktopBridge.saveConfig({
+      ...DEFAULT_CONFIG,
+      autoTranslate: false,
+      tencent: { ...DEFAULT_CONFIG.tencent, secretKey: "sk-test" },
+    });
+    let finish: (() => void) | undefined;
+    vi.spyOn(desktopBridge, "translateText").mockImplementation((request) => new Promise((resolve) => {
+      finish = () => resolve({
+        requestId: request.requestId,
+        source: request.source,
+        autoSrc: request.source,
+        target: request.target,
+        text: "late result",
+      });
+    }));
+    const cancelTranslation = vi.spyOn(desktopBridge, "cancelTranslation").mockResolvedValue(true);
+    render(App);
+
+    await fireEvent.input(await screen.findByRole("textbox", { name: "原文" }), { target: { value: "hello" } });
+    await fireEvent.click(screen.getByRole("button", { name: /^翻译$/ }));
+    const cancelButton = await screen.findByRole("button", { name: "取消翻译" });
+    expect(cancelButton).toHaveAttribute("aria-busy", "true");
+    await fireEvent.click(cancelButton);
+
+    expect(cancelTranslation).toHaveBeenCalledOnce();
+    expect(screen.getByText("已取消")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "取消翻译" })).not.toBeInTheDocument();
+    finish?.();
+  });
+
   it("clears the translation together with the source text", async () => {
     await desktopBridge.saveConfig({
       ...DEFAULT_CONFIG,

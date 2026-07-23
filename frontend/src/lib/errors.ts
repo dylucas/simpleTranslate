@@ -11,6 +11,7 @@ export const ErrorCodes: Record<string, TranslateErrorCode> = {
   RateLimit: "rate_limit",
   InvalidInput: "invalid_input",
   ServiceUnavailable: "service_unavailable",
+  Cancelled: "cancelled",
 };
 
 // 默认用户可读消息（后端 message 也可用，这里作为兜底）
@@ -22,6 +23,7 @@ const DEFAULT_MESSAGES: Record<TranslateErrorCode, string> = {
   rate_limit: "服务限流，请稍后再试",
   invalid_input: "输入文本为空",
   service_unavailable: "翻译服务暂时不可用",
+  cancelled: "请求已取消",
 };
 
 // StructuredErrorResult 是 normalizeError 的返回类型
@@ -49,6 +51,7 @@ export function isRetryable(code: string | undefined): boolean {
       return true;
     case ErrorCodes.Credentials:
     case ErrorCodes.InvalidInput:
+    case ErrorCodes.Cancelled:
       return false;
     default:
       return true;

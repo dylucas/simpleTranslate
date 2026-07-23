@@ -1,9 +1,42 @@
 package translate
 
 import (
+	"context"
+	"errors"
+	"net/http"
 	"strings"
 	"testing"
 )
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestChatCompletionContextCancellation(t *testing.T) {
+	previousClient := httpClient
+	defer func() { httpClient = previousClient }()
+
+	started := make(chan struct{})
+	httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		close(started)
+		<-req.Context().Done()
+		return nil, req.Context().Err()
+	})}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := chatCompletionWithAPIKeyContext(ctx, "hello", "test-key")
+		errCh <- err
+	}()
+	<-started
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("chatCompletion cancellation error = %v, want context.Canceled", err)
+	}
+}
 
 // TestNormalizeLangCode 验证模型返回的各种语种代码/名称归一化
 func TestNormalizeLangCode(t *testing.T) {

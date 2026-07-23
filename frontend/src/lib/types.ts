@@ -7,7 +7,8 @@ export type TranslateErrorCode =
   | "timeout"
   | "rate_limit"
   | "invalid_input"
-  | "service_unavailable";
+  | "service_unavailable"
+  | "cancelled";
 
 export interface ServiceConfig {
   secretId: string;

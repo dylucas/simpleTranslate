@@ -45,6 +45,7 @@ export interface TranslateControllerDeps {
 export interface TranslateController {
   state: Writable<TranslationState>;
   translate(): Promise<void>;
+  cancel(): void;
   handleAutoTranslate(value: string): void;
   cancelAutoTranslate(): void;
   showError(error: unknown): void;
@@ -104,6 +105,8 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
   let autoTimer: ReturnType<typeof setTimeout> | null = null;
   let errorTimer: ReturnType<typeof setTimeout> | null = null;
   let activeRequestKey: string | null = null;
+  let previousCompareOutputs: Partial<Record<EngineId, EngineTranslateResult>> | null = null;
+  const cancelledRequestIds = new Set<string>();
 
   function currentRequestKey(): string {
     const compareMode = deps.getCompareMode();
@@ -179,6 +182,7 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
     const requestKey = currentRequestKey();
     activeRequestKey = requestKey;
     let responseApplied = false;
+    previousCompareOutputs = get(state).compareOutputs;
 
     state.update((current) => ({
       ...current,
@@ -212,6 +216,7 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
         const firstSuccess = successful[0];
         const output = isSuccessfulResult(preferred) ? preferred.text : firstSuccess?.text || get(state).output;
         const allFailed = successful.length === 0;
+        const allCancelled = values.length > 0 && values.every((result) => result?.errorCode === ErrorCodes.Cancelled);
         const hasFailures = successful.length < engines.length;
 
         state.update((current) => ({
@@ -219,10 +224,10 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
           output,
           compareOutputs: results,
           compareLoadingEngines: {},
-          status: allFailed ? "翻译失败" : hasFailures ? "部分引擎失败" : "完成",
+          status: allCancelled ? "已取消" : allFailed ? "翻译失败" : hasFailures ? "部分引擎失败" : "完成",
         }));
-        if (allFailed) showError(failed[0] ?? "翻译服务未返回结果");
-        else addHistory(input, output, source, response.target || target);
+        if (allFailed && !allCancelled) showError(failed[0] ?? "翻译服务未返回结果");
+        else if (!allCancelled) addHistory(input, output, source, response.target || target);
 
         if (source === "auto" && response.autoSrc) {
           state.update((current) => ({
@@ -243,7 +248,9 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
         if (response.requestId !== get(state).activeRequestId) return;
         if (requestKey !== currentRequestKey()) return;
         responseApplied = true;
-        if (response.errorCode || response.error || !response.text.trim()) {
+        if (response.errorCode === ErrorCodes.Cancelled) {
+          state.update((current) => ({ ...current, status: "已取消" }));
+        } else if (response.errorCode || response.error || !response.text.trim()) {
           state.update((current) => ({ ...current, status: "翻译失败" }));
           showError(response.errorCode || response.error ? response : "翻译服务未返回结果");
         } else {
@@ -273,12 +280,14 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
       showError(error);
     } finally {
       if (!destroyed) {
+        const wasCancelled = cancelledRequestIds.delete(requestId);
         if (requestId === get(state).activeRequestId) {
           state.update((current) => ({ ...current, isProcessing: false, compareLoadingEngines: {} }));
           activeRequestKey = null;
+          previousCompareOutputs = null;
         }
         const latest = deps.getInput();
-        if (!responseApplied && latest.trim() && requestKey !== currentRequestKey()) {
+        if (!wasCancelled && !responseApplied && latest.trim() && requestKey !== currentRequestKey()) {
           void translate();
         }
       }
@@ -291,7 +300,9 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
     if (!value.trim()) return;
     autoTimer = setTimeout(() => {
       autoTimer = null;
-      if (value === deps.getInput()) void translate();
+      if (value !== deps.getInput()) return;
+      if (get(state).isProcessing) cancel();
+      void translate();
     }, AUTO_TRANSLATE_DELAY);
   }
 
@@ -300,9 +311,31 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
     autoTimer = null;
   }
 
+  function cancel(): void {
+    if (destroyed) return;
+    const current = get(state);
+    const requestId = current.activeRequestId;
+    if (!current.isProcessing || !requestId) return;
+
+    const compareOutputs = previousCompareOutputs ?? current.compareOutputs;
+    previousCompareOutputs = null;
+    cancelledRequestIds.add(requestId);
+    activeRequestKey = null;
+    state.update((value) => ({
+      ...value,
+      isProcessing: false,
+      status: "已取消",
+      activeRequestId: "",
+      compareOutputs,
+      compareLoadingEngines: {},
+    }));
+    void deps.bridge.cancelTranslation(requestId).catch(() => undefined);
+  }
+
   return {
     state,
     translate,
+    cancel,
     handleAutoTranslate,
     cancelAutoTranslate,
     showError,
@@ -316,10 +349,12 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
     },
     clear: () => {
       if (destroyed) return;
+      cancel();
       cancelAutoTranslate();
       if (errorTimer) clearTimeout(errorTimer);
       errorTimer = null;
       activeRequestKey = null;
+      previousCompareOutputs = null;
       state.set(initialState());
     },
     restore: (entry) => {
@@ -334,11 +369,13 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
       }));
     },
     destroy: () => {
+      cancel();
       destroyed = true;
       unsubscribeEngineResult();
       if (autoTimer) clearTimeout(autoTimer);
       if (errorTimer) clearTimeout(errorTimer);
       activeRequestKey = null;
+      previousCompareOutputs = null;
     },
   };
 }

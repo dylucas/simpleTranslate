@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { ArrowLeftRight, Clipboard, Columns2, LoaderCircle, Send, Zap } from "@lucide/svelte";
+  import { ArrowLeftRight, Clipboard, Columns2, Send, Square, Zap } from "@lucide/svelte";
   import { langs } from "./languages";
   import { ARIA_SHORTCUTS } from "./shortcuts";
   import type { EngineId } from "./types";
@@ -24,12 +24,13 @@
     onClipboard: () => void;
     onCompare: () => void;
     onTranslate: () => void;
+    onCancel: () => void;
   }
 
   let {
     source, target, activeEngine, autoTranslate, autoDetectLang, detectedSource,
     clipboardWatch, compareMode, isProcessing, canTranslate, unavailableReason,
-    onSource, onTarget, onEngine, onSwap, onAuto, onClipboard, onCompare, onTranslate,
+    onSource, onTarget, onEngine, onSwap, onAuto, onClipboard, onCompare, onTranslate, onCancel,
   }: Props = $props();
 
   let canSwap = $derived(source !== "auto" || Boolean(detectedSource));
@@ -67,8 +68,8 @@
       <button class:active={compareMode} aria-pressed={compareMode} aria-label="多引擎对照" onclick={onCompare} title="多引擎对照"><Columns2 size={14} /><span>对照</span></button>
     </div>
 
-    <button class="translate" onclick={onTranslate} disabled={!canTranslate || isProcessing} aria-busy={isProcessing} aria-label="翻译" aria-keyshortcuts={ARIA_SHORTCUTS.translate} title={unavailableReason || "翻译"}>
-      {#if isProcessing}<LoaderCircle size={15} class="spin" />{:else}<Send size={15} />{/if}<span>{isProcessing ? "翻译中" : "翻译"}</span>
+    <button class="translate" onclick={isProcessing ? onCancel : onTranslate} disabled={isProcessing ? false : !canTranslate} aria-busy={isProcessing} aria-label={isProcessing ? "取消翻译" : "翻译"} aria-keyshortcuts={isProcessing ? `${ARIA_SHORTCUTS.cancelTranslation} ${ARIA_SHORTCUTS.translate}` : ARIA_SHORTCUTS.translate} title={isProcessing ? "取消翻译" : unavailableReason || "翻译"}>
+      {#if isProcessing}<Square size={14} />{:else}<Send size={15} />{/if}<span>{isProcessing ? "取消" : "翻译"}</span>
     </button>
   </div>
 </header>

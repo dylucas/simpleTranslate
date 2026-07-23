@@ -1,6 +1,7 @@
 package translate
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -182,14 +183,22 @@ func GetDetectLanguage(text string) (string, error) {
 }
 
 func GetDetectLanguageWithConfig(text string, service config.ServiceConfig) (string, error) {
+	return GetDetectLanguageWithContext(context.Background(), text, service)
+}
+
+func getDetectLanguage(text string, client *openapi.Client) (string, error) {
+	return getDetectLanguageWithContext(context.Background(), text, client)
+}
+
+func GetDetectLanguageWithContext(ctx context.Context, text string, service config.ServiceConfig) (string, error) {
 	client, err := CreateClientWithConfig(service)
 	if err != nil {
 		return "", err
 	}
-	return getDetectLanguage(text, client)
+	return getDetectLanguageWithContext(ctx, text, client)
 }
 
-func getDetectLanguage(text string, client *openapi.Client) (string, error) {
+func getDetectLanguageWithContext(ctx context.Context, text string, client *openapi.Client) (string, error) {
 	text = strings.TrimSpace(text)
 	text = strings.ReplaceAll(text, "\n", " ")
 
@@ -205,7 +214,7 @@ func getDetectLanguage(text string, client *openapi.Client) (string, error) {
 		Body: body,
 	}
 
-	resp, err := client.CallApi(params, request, runtime)
+	resp, err := client.CallApiWithCtx(ctx, params, request, runtime)
 	if err != nil {
 		return "", err
 	}
@@ -237,14 +246,22 @@ func TranslateGeneral(text string, source string, target string) (string, error)
 }
 
 func TranslateGeneralWithConfig(text string, source string, target string, service config.ServiceConfig) (string, error) {
+	return TranslateGeneralWithContext(context.Background(), text, source, target, service)
+}
+
+func translateGeneral(text string, source string, target string, client *openapi.Client) (string, error) {
+	return translateGeneralWithContext(context.Background(), text, source, target, client)
+}
+
+func TranslateGeneralWithContext(ctx context.Context, text string, source string, target string, service config.ServiceConfig) (string, error) {
 	client, err := CreateClientWithConfig(service)
 	if err != nil {
 		return "", err
 	}
-	return translateGeneral(text, source, target, client)
+	return translateGeneralWithContext(ctx, text, source, target, client)
 }
 
-func translateGeneral(text string, source string, target string, client *openapi.Client) (string, error) {
+func translateGeneralWithContext(ctx context.Context, text string, source string, target string, client *openapi.Client) (string, error) {
 
 	params := CreateApiInfo("TranslateGeneral")
 	body := map[string]interface{}{}
@@ -262,7 +279,7 @@ func translateGeneral(text string, source string, target string, client *openapi
 		Body: body,
 	}
 
-	resp, err := client.CallApi(params, request, runtime)
+	resp, err := client.CallApiWithCtx(ctx, params, request, runtime)
 	if err != nil {
 		return "", err
 	}

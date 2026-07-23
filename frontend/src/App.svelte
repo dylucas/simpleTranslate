@@ -154,6 +154,10 @@
   }
 
   function requestTranslation(): void {
+    if (translation.isProcessing) {
+      controller.cancel();
+      return;
+    }
     if (!credentialsReady) {
       controller.showError({ errorCode: "credentials", error: "请先配置可用的翻译凭据" });
       return;
@@ -241,6 +245,7 @@
 
   const shortcuts = createShortcutHandler({
     onTranslate: requestTranslation,
+    onCancel: () => controller.cancel(),
     onFocusInput: focusInputFromShortcut,
     onClearInput: clearInput,
     onSwapLangs: swapLanguages,
@@ -322,7 +327,7 @@
       onEngine={(engine) => persistConfig(configController.patch("defaultEngine", engine))}
       onSwap={swapLanguages} onAuto={(value) => persistConfig(configController.patch("autoTranslate", value))}
       onClipboard={() => persistConfig(configController.patch("clipboardWatch", !config.clipboardWatch))}
-      onCompare={() => persistConfig(configController.patch("compareMode", !config.compareMode))} onTranslate={requestTranslation}
+      onCompare={() => persistConfig(configController.patch("compareMode", !config.compareMode))} onTranslate={requestTranslation} onCancel={() => controller.cancel()}
     />
 
     {#if credentialMessage}

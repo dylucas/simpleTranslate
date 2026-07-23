@@ -72,6 +72,74 @@ describe("translate controller", () => {
     harness.controller.destroy();
   });
 
+  it("cancels an active request without losing the previous output", async () => {
+    let finish: ((value: Awaited<ReturnType<DesktopBridge["translateText"]>>) => void) | undefined;
+    const bridge: DesktopBridge = {
+      ...createMockBridge(),
+      cancelTranslation: vi.fn(async () => true),
+      translateText: () => new Promise((resolve) => { finish = resolve; }),
+    };
+    const harness = createHarness(bridge);
+    harness.controller.setOutput("previous output");
+
+    const pending = harness.controller.translate();
+    const requestId = get(harness.controller.state).activeRequestId;
+    harness.controller.cancel();
+
+    expect(bridge.cancelTranslation).toHaveBeenCalledWith(requestId);
+    expect(get(harness.controller.state)).toMatchObject({
+      isProcessing: false,
+      status: "已取消",
+      output: "previous output",
+      activeRequestId: "",
+      compareLoadingEngines: {},
+    });
+
+    finish?.({ requestId, source: "en", autoSrc: "en", target: "zh", text: "late result" });
+    await pending;
+    expect(get(harness.controller.state).output).toBe("previous output");
+    expect(harness.getHistory()).toHaveLength(0);
+    harness.controller.destroy();
+  });
+
+  it("cancels the previous request before translating the latest auto input", async () => {
+    vi.useFakeTimers();
+    let finishFirst: ((value: Awaited<ReturnType<DesktopBridge["translateText"]>>) => void) | undefined;
+    const calls: string[] = [];
+    const bridge: DesktopBridge = {
+      ...createMockBridge(),
+      cancelTranslation: vi.fn(async () => true),
+      async translateText(request) {
+        calls.push(request.text);
+        if (calls.length === 1) {
+          return new Promise((resolve) => { finishFirst = resolve; });
+        }
+        return {
+          requestId: request.requestId,
+          source: request.source,
+          autoSrc: request.source,
+          target: request.target,
+          text: "latest output",
+        };
+      },
+    };
+    const harness = createHarness(bridge);
+    const first = harness.controller.translate();
+    const firstRequestId = get(harness.controller.state).activeRequestId;
+    harness.setInput("latest");
+    harness.controller.handleAutoTranslate("latest");
+
+    await vi.advanceTimersByTimeAsync(700);
+    await vi.waitFor(() => expect(calls).toEqual(["hello", "latest"]));
+    expect(bridge.cancelTranslation).toHaveBeenCalledWith(firstRequestId);
+    expect(get(harness.controller.state).output).toBe("latest output");
+
+    finishFirst?.({ requestId: firstRequestId, source: "en", autoSrc: "en", target: "zh", text: "stale output" });
+    await first;
+    expect(get(harness.controller.state).output).toBe("latest output");
+    harness.controller.destroy();
+  });
+
   it("ignores engine events from an older request", async () => {
     let eventHandler: ((result: EngineTranslateResult) => void) | undefined;
     let finish: ((result: MultiTranslateResult) => void) | undefined;

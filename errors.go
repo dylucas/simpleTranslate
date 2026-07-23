@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"strings"
 )
@@ -22,6 +23,8 @@ const (
 	ErrCodeInvalidInput = "invalid_input"
 	// ErrCodeServiceUnavailable 服务端 5xx 不可用
 	ErrCodeServiceUnavailable = "service_unavailable"
+	// ErrCodeCancelled 请求被用户或应用主动取消
+	ErrCodeCancelled = "cancelled"
 )
 
 // TranslateError 结构化翻译错误，序列化为 JSON 后供前端按类别处理。
@@ -58,6 +61,12 @@ func newTranslateError(code, engine, message string, cause error) *TranslateErro
 func classifyError(engine string, err error) *TranslateError {
 	if err == nil {
 		return nil
+	}
+	if errors.Is(err, context.Canceled) {
+		return newTranslateError(ErrCodeCancelled, engine, "请求已取消", err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return newTranslateError(ErrCodeTimeout, engine, "请求超时，请稍后重试", err)
 	}
 	msg := err.Error()
 	lower := strings.ToLower(msg)

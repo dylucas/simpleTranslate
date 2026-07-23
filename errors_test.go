@@ -1,9 +1,17 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
+
+func TestClassifyError_Cancelled(t *testing.T) {
+	te := classifyError("tencent", context.Canceled)
+	if te.Code != ErrCodeCancelled {
+		t.Fatalf("classify(context.Canceled) = %q, want %q", te.Code, ErrCodeCancelled)
+	}
+}
 
 // TestClassifyError_Credentials 各种凭据相关错误应归为 credentials
 func TestClassifyError_Credentials(t *testing.T) {
