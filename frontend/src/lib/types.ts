@@ -1,4 +1,18 @@
-export type EngineId = "tencent" | "aliyun";
+export type EngineId = "tencent" | "aliyun" | "baidu";
+
+export type BaiduDomain =
+  | "general"
+  | "it"
+  | "finance"
+  | "machinery"
+  | "senimed"
+  | "novel"
+  | "academic"
+  | "aerospace"
+  | "wiki"
+  | "news"
+  | "law"
+  | "contract";
 
 export type TranslateErrorCode =
   | "unknown"
@@ -16,10 +30,17 @@ export interface ServiceConfig {
   region: string;
 }
 
+export interface BaiduConfig {
+  appId: string;
+  secretKey: string;
+  domain: BaiduDomain;
+}
+
 export interface CloudConfig {
   version: number;
   tencent: ServiceConfig;
   aliyun: ServiceConfig;
+  baidu: BaiduConfig;
   defaultEngine: EngineId;
   isDark: boolean;
   sidebarCollapsed: boolean;
@@ -53,6 +74,7 @@ export interface TranslateResult {
   autoSrc: string;
   target: string;
   text: string;
+  notice?: string;
   error?: string;
   errorCode?: TranslateErrorCode;
 }
@@ -61,6 +83,7 @@ export interface EngineTranslateResult {
   requestId: string;
   engine: EngineId;
   text: string;
+  notice?: string;
   error?: string;
   errorCode?: TranslateErrorCode;
 }

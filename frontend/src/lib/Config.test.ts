@@ -20,6 +20,30 @@ describe("settings draft", () => {
     expect(onSave).not.toHaveBeenCalled();
   });
 
+  it("tests Baidu draft credentials and keeps the selected domain", async () => {
+    const onSave = vi.fn(async () => undefined);
+    const onTest = vi.fn(async () => undefined);
+    render(Config, {
+      open: true,
+      config: {
+        ...DEFAULT_CONFIG,
+        baidu: { appId: "baidu-app", secretKey: "baidu-key", domain: "general" },
+      },
+      onClose: vi.fn(),
+      onSave,
+      onTest,
+    });
+
+    await fireEvent.change(screen.getByRole("combobox", { name: "百度翻译领域" }), { target: { value: "it" } });
+    await fireEvent.click(screen.getByRole("button", { name: "测试百度翻译连接" }));
+    expect(onTest).toHaveBeenCalledWith("baidu", {
+      appId: "baidu-app",
+      secretKey: "baidu-key",
+      domain: "it",
+    });
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
   it("cancels without persisting edits", async () => {
     const onSave = vi.fn(async () => undefined);
     const onClose = vi.fn();

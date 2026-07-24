@@ -3,6 +3,7 @@ import {
   LoadHistory,
   SaveConfig,
   SaveHistory,
+  TestBaiduConnection,
   TestConnection,
   CancelTranslation,
   TranslateMulti,
@@ -12,6 +13,7 @@ import { ClipboardGetText, ClipboardSetText, EventsOn } from "../../wailsjs/runt
 import { config as wailsConfig } from "../../wailsjs/go/models";
 import type {
   CloudConfig,
+  BaiduConfig,
   EngineId,
   EngineTranslateResult,
   HistoryEntry,
@@ -28,7 +30,7 @@ export interface DesktopBridge {
   saveConfig(config: CloudConfig): Promise<void>;
   loadHistory(): Promise<HistoryEntry[]>;
   saveHistory(history: HistoryEntry[]): Promise<void>;
-  testConnection(engine: EngineId, service: ServiceConfig): Promise<void>;
+  testConnection(engine: EngineId, service: ServiceConfig | BaiduConfig): Promise<void>;
   translateText(request: TranslateRequest): Promise<TranslateResult>;
   translateMulti(request: MultiTranslateRequest): Promise<MultiTranslateResult>;
   cancelTranslation(requestId: string): Promise<boolean>;
@@ -38,9 +40,10 @@ export interface DesktopBridge {
 }
 
 export const DEFAULT_CONFIG: CloudConfig = {
-  version: 2,
+  version: 3,
   tencent: { secretId: "", secretKey: "", region: "" },
   aliyun: { secretId: "", secretKey: "", region: "cn-hangzhou" },
+  baidu: { appId: "", secretKey: "", domain: "general" },
   defaultEngine: "tencent",
   isDark: true,
   sidebarCollapsed: false,
@@ -48,7 +51,7 @@ export const DEFAULT_CONFIG: CloudConfig = {
   sourceLanguage: "auto",
   targetLanguage: "zh",
   compareMode: false,
-  compareEngines: ["tencent", "aliyun"],
+  compareEngines: ["tencent", "aliyun", "baidu"],
   clipboardWatch: false,
 };
 
@@ -57,6 +60,7 @@ export function cloneConfig(config: CloudConfig): CloudConfig {
     ...config,
     tencent: { ...config.tencent },
     aliyun: { ...config.aliyun },
+    baidu: { ...config.baidu },
     compareEngines: [...config.compareEngines],
   };
 }
@@ -68,7 +72,9 @@ function createWailsBridge(): DesktopBridge {
     saveConfig: (config) => SaveConfig(wailsConfig.CloudConfig.createFrom(config)),
     loadHistory: () => LoadHistory() as Promise<HistoryEntry[]>,
     saveHistory: (history) => SaveHistory(history),
-    testConnection: (engine, service) => TestConnection(engine, service),
+    testConnection: (engine, service) => engine === "baidu"
+      ? TestBaiduConnection(service as BaiduConfig)
+      : TestConnection(engine, service as ServiceConfig),
     translateText: (request) => TranslateText(request) as Promise<TranslateResult>,
     translateMulti: (request) => TranslateMulti(request) as Promise<MultiTranslateResult>,
     cancelTranslation: (requestId) => CancelTranslation(requestId),
@@ -111,9 +117,11 @@ export function createMockBridge(initial: CloudConfig = DEFAULT_CONFIG): Desktop
       history = next.map((item) => ({ ...item }));
     },
     async testConnection(engine, service) {
-      const valid = engine === "tencent"
-        ? Boolean(service.secretKey.trim())
-        : Boolean(service.secretId.trim() && service.secretKey.trim());
+      const valid = engine === "baidu"
+        ? Boolean((service as BaiduConfig).appId.trim() && service.secretKey.trim())
+        : engine === "tencent"
+          ? Boolean(service.secretKey.trim())
+          : Boolean((service as ServiceConfig).secretId.trim() && service.secretKey.trim());
       if (!valid) throw new Error("请先填写完整凭据");
     },
     async translateText(request) {

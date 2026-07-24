@@ -7,11 +7,12 @@
 
 ## 简介
 
-SimpleTranslate 是一个基于 Wails 框架开发的桌面翻译应用。后端使用 Go 语言，前端使用 Svelte 框架，提供简洁高效的翻译体验。支持腾讯云和阿里云的翻译服务，能够自动检测语言并进行实时翻译。
+SimpleTranslate 是一个基于 Wails 框架开发的桌面翻译应用。后端使用 Go 语言，前端使用 Svelte 框架，提供简洁高效的翻译体验。支持腾讯混元、阿里云和百度翻译，能够自动检测语言并进行实时翻译。
 
 ## 功能特性
 
-- **多云服务支持**：集成腾讯云翻译和阿里云翻译服务
+- **多云服务支持**：集成腾讯混元、阿里云机器翻译和百度翻译
+- **百度领域翻译**：支持信息技术、金融财经、机械制造、生物医药、网络文学、学术论文、航空航天、人文社科、新闻资讯、法律法规和合同领域
 - **多引擎对比模式**：同一文本并发调用多个引擎，并排展示结果便于择优（单引擎超时 30s 不阻塞整体）
 - **自动语言检测**：支持自动识别源语言，跨引擎 best-effort 兜底
 - **实时翻译**：输入文本后即时显示翻译结果（700ms 防抖自动翻译，可开关）
@@ -72,7 +73,7 @@ SimpleTranslate 是一个基于 Wails 框架开发的桌面翻译应用。后端
 
 2. 配置 API 密钥：
    - 打开设置界面
-   - 输入腾讯云或阿里云的 SecretId 和 SecretKey
+   - 输入所选服务的凭据；百度翻译需要 APP ID 和密钥
    - 设置默认翻译引擎，可点击「测试连接」验证凭据
 
 3. 开始翻译：
@@ -124,6 +125,7 @@ simpleTranslate/
 ├── config.go           # 配置相关方法（包装 config 包供前端调用）
 ├── translate/          # 翻译服务包
 │   ├── aliyun.go       # 阿里云翻译实现
+│   ├── baidu.go        # 百度通用、语种识别和领域翻译实现
 │   └── tencent.go      # 腾讯云翻译实现
 ├── config/             # 配置工具包（含进程内缓存）
 ├── frontend/           # 前端代码
@@ -171,14 +173,26 @@ wails build -clean -o simpleTranslate-mac-arm64 -platform darwin/arm64
 
 应用配置存储在用户主目录下的 `.simple_translate/config.json` 文件中（0600 权限，进程内缓存避免频繁读盘），包括：
 
-- 云服务 API 密钥（腾讯云 / 阿里云的 SecretId、SecretKey、Region）
-- 默认翻译引擎（`tencent` / `aliyun`）
+- 云服务 API 密钥（包括百度 APP ID、密钥和领域设置）
+- 默认翻译引擎（`tencent` / `aliyun` / `baidu`）
 - 多引擎对比设置（`compareMode`、`compareEngines`）
 - 剪贴板监听开关（`clipboardWatch`）
 - UI 设置（暗色模式、侧边栏折叠状态等）
 - 自动翻译开关与最近使用的源语言 / 目标语言
 
 历史记录独立存储于同目录的 `history.json`，上限 200 条。
+
+### 百度翻译
+
+在百度翻译开放平台开通服务后，在偏好设置中填写 APP ID 和密钥，并选择通用或领域模式。网络文学和人文社科领域仅支持中译英，其他领域支持中英双向；不支持的语种方向会自动使用百度通用翻译，并在结果中显示回退提示。远端领域服务报错时不会静默回退。
+
+百度标准版请求由应用统一串行调度，相邻请求至少间隔 1 秒。APP ID 和密钥只保存在本机 `.simple_translate/config.json`，配置文件权限为 `0600`，不会写入源码或历史记录。
+
+百度实时探针默认跳过。需要验证真实服务时，仅向测试进程注入凭据：
+
+```bash
+BAIDU_LIVE_TEST=1 BAIDU_APP_ID=... BAIDU_SECRET_KEY=... go test ./translate -run TestBaiduLiveAPIs
+```
 
 UI 设计规范参见 [frontend/DESIGN_SYSTEM.md](frontend/DESIGN_SYSTEM.md)。
 

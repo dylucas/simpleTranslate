@@ -21,6 +21,7 @@ export interface TranslationState {
   isProcessing: boolean;
   status: string;
   output: string;
+  notice: string;
   compareOutputs: Partial<Record<EngineId, EngineTranslateResult>>;
   compareLoadingEngines: Partial<Record<EngineId, boolean>>;
   errorToast: ErrorToast | null;
@@ -65,6 +66,7 @@ function initialState(): TranslationState {
     isProcessing: false,
     status: "准备就绪",
     output: "",
+    notice: "",
     compareOutputs: {},
     compareLoadingEngines: {},
     errorToast: null,
@@ -222,6 +224,7 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
         state.update((current) => ({
           ...current,
           output,
+          notice: isSuccessfulResult(preferred) ? preferred.notice ?? "" : firstSuccess?.notice ?? "",
           compareOutputs: results,
           compareLoadingEngines: {},
           status: allCancelled ? "已取消" : allFailed ? "翻译失败" : hasFailures ? "部分引擎失败" : "完成",
@@ -258,6 +261,7 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
           state.update((current) => ({
             ...current,
             output: response.text,
+            notice: response.notice ?? "",
             compareOutputs: {},
             status: "完成",
           }));
@@ -345,7 +349,7 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
       void translate();
     },
     setOutput: (output) => {
-      if (!destroyed) state.update((current) => ({ ...current, output }));
+      if (!destroyed) state.update((current) => ({ ...current, output, notice: "" }));
     },
     clear: () => {
       if (destroyed) return;
@@ -362,6 +366,7 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
       state.update((current) => ({
         ...current,
         output: entry.output,
+        notice: "",
         compareOutputs: {},
         autoDetectLang: "自动识别",
         lastDetectedLang: "",

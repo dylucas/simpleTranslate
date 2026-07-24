@@ -5,6 +5,7 @@
   import { createClipboardWatcher } from "./lib/clipboard";
   import { createConfigController, normalizeConfig } from "./lib/configController";
   import { createHistoryPersistence } from "./lib/historyPersistence";
+  import { engineLabel, isEngineConfigured } from "./lib/engines";
   import { langs, getSpeechLang } from "./lib/languages";
   import { ARIA_SHORTCUTS, createShortcutHandler } from "./lib/shortcuts";
   import { createSpeaker } from "./lib/speech";
@@ -81,9 +82,7 @@
   let translation = $derived($translationState);
 
   function isConfigured(engine: EngineId): boolean {
-    return engine === "tencent"
-      ? Boolean(config.tencent.secretKey.trim())
-      : Boolean(config.aliyun.secretId.trim() && config.aliyun.secretKey.trim());
+    return isEngineConfigured(config, engine);
   }
 
   let availableCompareEngines = $derived(config.compareEngines.filter(isConfigured));
@@ -99,10 +98,10 @@
       : "");
   let credentialMessage = $derived.by(() => {
     if (!config.compareMode && !isConfigured(config.defaultEngine)) {
-      return `${config.defaultEngine === "tencent" ? "腾讯混元" : "阿里云"}尚未配置凭据`;
+      return `${engineLabel(config.defaultEngine, true)}尚未配置凭据`;
     }
     if (config.compareMode && missingCompareEngines.length) {
-      const names = missingCompareEngines.map((engine) => engine === "tencent" ? "混元" : "阿里云").join("、");
+      const names = missingCompareEngines.map((engine) => engineLabel(engine)).join("、");
       return availableCompareEngines.length ? `${names}未配置，将仅使用可用引擎` : "所选对照引擎均未配置凭据";
     }
     return "";
@@ -358,13 +357,14 @@
 
       <section class="editor-pane result-pane" aria-labelledby="result-title" aria-busy={translation.isProcessing}>
         <header class="pane-header">
-          <div class="pane-title"><span class="pane-icon result"><Languages size={14} /></span><span class="pane-label">输出</span><h2 id="result-title">{config.compareMode ? "对照译文" : "译文"}</h2><span class="pane-context">{config.compareMode ? "多引擎" : config.defaultEngine === "tencent" ? "混元" : "阿里云"}</span></div>
+          <div class="pane-title"><span class="pane-icon result"><Languages size={14} /></span><span class="pane-label">输出</span><h2 id="result-title">{config.compareMode ? "对照译文" : "译文"}</h2><span class="pane-context">{config.compareMode ? "多引擎" : engineLabel(config.defaultEngine)}</span></div>
           {#if translation.isProcessing && translation.output}<span class="updating"><i></i>正在更新</span>{/if}
         </header>
         {#if config.compareMode}
           <div class="compare-wrap"><ComparePanel engines={config.compareEngines} outputs={translation.compareOutputs} loading={translation.compareLoadingEngines} copied={copiedEngines} {speakingText} {target} {isConfigured} onToggle={toggleCompareEngine} onCopy={(engine) => void copyText(translation.compareOutputs[engine]?.text ?? "", engine)} onSpeak={speak} onSettings={() => openPanel("config")} /></div>
         {:else if translation.output}
           <textarea class="editor" readonly value={translation.output} aria-label="译文"></textarea>
+          {#if translation.notice}<div class="result-notice" role="status"><AlertCircle size={13} />{translation.notice}</div>{/if}
           <footer class="pane-footer">
             <span class="pane-note">{langs[target] ?? target}</span>
             <div class="pane-actions">
@@ -408,6 +408,8 @@
   .editor { width: 100%; min-height: 0; flex: 1; resize: none; border: 0; outline: 0; padding: 18px; background: transparent; color: var(--text-main); font: var(--fw-regular) var(--fs-lg)/var(--lh-relaxed) var(--font-sans); }
   .editor::placeholder { color: color-mix(in srgb, var(--text-muted) 84%, transparent); }
   .pane-footer { display: flex; min-height: 38px; flex: 0 0 auto; align-items: center; justify-content: space-between; border-top: 1px solid var(--border-soft); padding: 0 var(--sp-3); color: var(--text-muted); font-size: var(--fs-xs); }
+  .result-notice { display: flex; min-height: 30px; flex: 0 0 auto; align-items: center; gap: var(--sp-2); border-top: 1px solid var(--warning-border); padding: 0 var(--sp-3); background: var(--warning-soft); color: var(--text-sec); font-size: var(--fs-xs); }
+  .result-notice :global(svg) { flex: 0 0 auto; color: var(--warning); }
   .pane-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pane-actions { display: flex; min-width: 0; align-items: center; gap: 2px; }
   .pane-footer button { display: inline-flex; height: 28px; align-items: center; justify-content: center; gap: var(--sp-1); border: 1px solid transparent; border-radius: var(--radius-sm); padding: 0 var(--sp-2); background: transparent; color: var(--text-sec); cursor: pointer; font: inherit; }

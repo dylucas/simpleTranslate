@@ -60,6 +60,7 @@
     <div class="engine-switch" role="group" aria-label="默认翻译引擎">
       <button class:active={activeEngine === "tencent"} aria-pressed={activeEngine === "tencent"} onclick={() => onEngine("tencent")}>混元</button>
       <button class:active={activeEngine === "aliyun"} aria-pressed={activeEngine === "aliyun"} onclick={() => onEngine("aliyun")}>阿里云</button>
+      <button class:active={activeEngine === "baidu"} aria-pressed={activeEngine === "baidu"} onclick={() => onEngine("baidu")}>百度</button>
     </div>
 
     <div class="mode-toggles" role="group" aria-label="翻译模式">

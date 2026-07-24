@@ -1,7 +1,13 @@
 import { get, writable, type Readable } from "svelte/store";
 import { cloneConfig, DEFAULT_CONFIG, type DesktopBridge } from "./bridge";
 import { langs } from "./languages";
-import type { CloudConfig, EngineId } from "./types";
+import { isEngineId } from "./engines";
+import type { BaiduDomain, CloudConfig, EngineId } from "./types";
+
+const BAIDU_DOMAINS = new Set<BaiduDomain>([
+  "general", "it", "finance", "machinery", "senimed", "novel",
+  "academic", "aerospace", "wiki", "news", "law", "contract",
+]);
 
 export interface ConfigState {
   value: CloudConfig;
@@ -25,20 +31,23 @@ function normalizeLanguage(value: string | undefined, allowAuto: boolean, fallba
 }
 
 export function normalizeConfig(input?: Partial<CloudConfig> | null): CloudConfig {
-  const defaultEngine: EngineId = input?.defaultEngine === "aliyun" ? "aliyun" : "tencent";
+  const defaultEngine: EngineId = isEngineId(input?.defaultEngine) ? input.defaultEngine : "tencent";
   const compareEngines = input?.compareEngines?.filter(
-    (engine): engine is EngineId => engine === "tencent" || engine === "aliyun",
+    (engine): engine is EngineId => isEngineId(engine),
   );
+  const inputDomain = input?.baidu?.domain;
+  const domain: BaiduDomain = inputDomain && BAIDU_DOMAINS.has(inputDomain) ? inputDomain : "general";
   return {
     ...DEFAULT_CONFIG,
     ...input,
-    version: 2,
+    version: 3,
     defaultEngine,
     tencent: { ...DEFAULT_CONFIG.tencent, ...input?.tencent },
     aliyun: { ...DEFAULT_CONFIG.aliyun, ...input?.aliyun },
+    baidu: { ...DEFAULT_CONFIG.baidu, ...input?.baidu, domain },
     sourceLanguage: normalizeLanguage(input?.sourceLanguage, true, "auto"),
     targetLanguage: normalizeLanguage(input?.targetLanguage, false, "zh"),
-    compareEngines: compareEngines?.length ? [...new Set(compareEngines)] : ["tencent", "aliyun"],
+    compareEngines: compareEngines?.length ? [...new Set(compareEngines)] : ["tencent", "aliyun", "baidu"],
   };
 }
 

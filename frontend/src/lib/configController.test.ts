@@ -16,6 +16,20 @@ describe("config controller", () => {
     });
   });
 
+  it("normalizes Baidu engine settings", () => {
+    expect(normalizeConfig({
+      defaultEngine: "baidu",
+      baidu: { appId: "app", secretKey: "key", domain: "wiki" },
+      compareEngines: ["baidu", "tencent", "baidu"],
+    })).toMatchObject({
+      version: 3,
+      defaultEngine: "baidu",
+      baidu: { appId: "app", secretKey: "key", domain: "wiki" },
+      compareEngines: ["baidu", "tencent"],
+    });
+    expect(normalizeConfig({ baidu: { appId: "", secretKey: "", domain: "invalid" as never } }).baidu.domain).toBe("general");
+  });
+
   it("coalesces queued writes and keeps the latest snapshot", async () => {
     const saved: CloudConfig[] = [];
     let releaseFirst: (() => void) | undefined;

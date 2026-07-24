@@ -28,6 +28,7 @@ func TestSaveConfig_RoundTrip(t *testing.T) {
 	want := CloudConfig{
 		Tencent:        ServiceConfig{SecretId: "tid", SecretKey: "tkey", Region: "ap-guangzhou"},
 		Aliyun:         ServiceConfig{SecretId: "aid", SecretKey: "akey", Region: "cn-hangzhou"},
+		Baidu:          BaiduConfig{AppID: "bid", SecretKey: "bkey", Domain: "it"},
 		DefaultEngine:  "tencent",
 		IsDark:         true,
 		CompareMode:    true,
@@ -151,6 +152,52 @@ func TestGetConfig_MigratesLegacyFields(t *testing.T) {
 	}
 	if cfg.IsDark {
 		t.Fatal("an explicit legacy isDark=false must be preserved")
+	}
+}
+
+func TestGetConfigMigratesV2WithoutChangingSelectedEngines(t *testing.T) {
+	InvalidateCache()
+	path := filepath.Join(t.TempDir(), "config.json")
+	v2 := `{
+		"version":2,
+		"defaultEngine":"aliyun",
+		"compareEngines":["aliyun","tencent"]
+	}`
+	if err := os.WriteFile(path, []byte(v2), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := GetConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Version != 3 || cfg.DefaultEngine != "aliyun" {
+		t.Fatalf("v2 migration changed engine selection: %+v", cfg)
+	}
+	if !reflect.DeepEqual(cfg.CompareEngines, []string{"aliyun", "tencent"}) {
+		t.Fatalf("v2 migration changed compare engines: %v", cfg.CompareEngines)
+	}
+	if cfg.Baidu.Domain != BaiduGeneralDomain {
+		t.Fatalf("migrated Baidu domain = %q, want general", cfg.Baidu.Domain)
+	}
+}
+
+func TestNormalizeConfigBaidu(t *testing.T) {
+	cfg := normalizeConfig(CloudConfig{
+		DefaultEngine:  "baidu",
+		Baidu:          BaiduConfig{Domain: " WIKI "},
+		CompareEngines: []string{"baidu", "tencent", "baidu", "invalid"},
+	})
+	if cfg.DefaultEngine != "baidu" || cfg.Baidu.Domain != "wiki" {
+		t.Fatalf("Baidu config was not normalized: %+v", cfg)
+	}
+	if !reflect.DeepEqual(cfg.CompareEngines, []string{"baidu", "tencent"}) {
+		t.Fatalf("compare engines = %v", cfg.CompareEngines)
+	}
+
+	cfg = normalizeConfig(CloudConfig{Baidu: BaiduConfig{Domain: "medicine"}})
+	if cfg.Baidu.Domain != BaiduGeneralDomain {
+		t.Fatalf("invalid Baidu domain = %q, want general", cfg.Baidu.Domain)
 	}
 }
 

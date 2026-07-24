@@ -98,13 +98,14 @@ func TestNormalizeEngines(t *testing.T) {
 		in   []string
 		want []string
 	}{
-		{"空列表兜底", []string{}, []string{"tencent", "aliyun"}},
-		{"nil 兜底", nil, []string{"tencent", "aliyun"}},
+		{"空列表兜底", []string{}, []string{"tencent", "aliyun", "baidu"}},
+		{"nil 兜底", nil, []string{"tencent", "aliyun", "baidu"}},
 		{"单引擎", []string{"tencent"}, []string{"tencent"}},
 		{"大小写归一", []string{"TENCENT", "Aliyun"}, []string{"tencent", "aliyun"}},
 		{"去重", []string{"tencent", "tencent", "aliyun"}, []string{"tencent", "aliyun"}},
 		{"过滤非法值", []string{"tencent", "deepseek", "", "  ", "aliyun"}, []string{"tencent", "aliyun"}},
-		{"全非法值兜底", []string{"xxx", "yyy"}, []string{"tencent", "aliyun"}},
+		{"百度引擎", []string{"baidu", "tencent"}, []string{"baidu", "tencent"}},
+		{"全非法值兜底", []string{"xxx", "yyy"}, []string{"tencent", "aliyun", "baidu"}},
 		{"含空白字符", []string{"  tencent  ", "aliyun"}, []string{"tencent", "aliyun"}},
 	}
 	for _, c := range cases {
@@ -253,6 +254,34 @@ func TestTranslateMultiEmitsCachedEngineResults(t *testing.T) {
 	}
 	if len(emitted) != 1 || emitted[0].Text != "cached result" {
 		t.Fatalf("cached engine should emit one streaming result, got %#v", emitted)
+	}
+}
+
+func TestBaiduDomainCacheIsolationAndFallbackNotice(t *testing.T) {
+	general := translationResultCacheKey("baidu", "general", "fr", "zh", "bonjour")
+	field := translationResultCacheKey("baidu", "it", "fr", "zh", "bonjour")
+	if general == field {
+		t.Fatal("Baidu general and field modes must not share cache keys")
+	}
+
+	config.InvalidateCache()
+	app := NewAppWithDataDir(t.TempDir())
+	cfg := config.DefaultCloudConfig()
+	cfg.Baidu = config.BaiduConfig{AppID: "draft", SecretKey: "draft", Domain: "it"}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	app.translateInvoke = func(_ context.Context, engine, _, _, _ string) (string, error) {
+		if engine != "baidu" {
+			t.Fatalf("engine = %q", engine)
+		}
+		return "你好", nil
+	}
+	result := app.TranslateText(TranslateRequest{
+		RequestID: "baidu-fallback", Text: "bonjour", Source: "fr", Target: "zh", Engine: "baidu",
+	})
+	if result.Text != "你好" || result.Notice == "" {
+		t.Fatalf("fallback result = %+v", result)
 	}
 }
 
@@ -433,6 +462,10 @@ func TestTranslateText_MissingCreds(t *testing.T) {
 	}
 	if res.ErrorCode != "credentials" {
 		t.Errorf("期望错误码 credentials，得到 %q", res.ErrorCode)
+	}
+	res = app.TranslateText(TranslateRequest{RequestID: "baidu-missing", Text: "hello", Source: "en", Target: "zh", Engine: "baidu"})
+	if res.ErrorCode != ErrCodeCredentials {
+		t.Errorf("百度缺少凭据错误码 = %q, want credentials", res.ErrorCode)
 	}
 }
 

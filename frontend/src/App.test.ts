@@ -20,6 +20,7 @@ describe("standalone app", () => {
     expect(screen.getByText("预览")).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "翻译语言" })).toBeInTheDocument();
     expect(screen.getByRole("group", { name: "默认翻译引擎" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "百度" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "自动翻译" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("textbox", { name: "原文" })).toHaveAttribute("aria-keyshortcuts", ARIA_SHORTCUTS.focusInput);
     expect(screen.getByRole("button", { name: "识别语言后即可交换" })).toHaveAttribute("aria-keyshortcuts", ARIA_SHORTCUTS.swapLanguages);
@@ -28,6 +29,65 @@ describe("standalone app", () => {
     expect(screen.getByRole("button", { name: "切换深浅主题" })).toHaveAttribute("aria-keyshortcuts", ARIA_SHORTCUTS.toggleTheme);
     expect(screen.getByRole("button", { name: "打开设置" })).toHaveAttribute("aria-keyshortcuts", ARIA_SHORTCUTS.toggleSettings);
     expect(screen.queryByRole("button", { name: "收起侧边栏" })).not.toBeInTheDocument();
+  });
+
+  it("switches to Baidu as the third engine", async () => {
+    const saveConfig = vi.spyOn(desktopBridge, "saveConfig");
+    render(App);
+
+    await fireEvent.click(await screen.findByRole("button", { name: "百度" }));
+    await waitFor(() => expect(saveConfig).toHaveBeenCalledWith(expect.objectContaining({ defaultEngine: "baidu" })));
+  });
+
+  it("renders a Baidu field fallback notice for a single result", async () => {
+    await desktopBridge.saveConfig({
+      ...DEFAULT_CONFIG,
+      autoTranslate: false,
+      defaultEngine: "baidu",
+      baidu: { appId: "app", secretKey: "key", domain: "it" },
+    });
+    vi.spyOn(desktopBridge, "translateText").mockImplementation(async (request) => ({
+      requestId: request.requestId,
+      source: request.source,
+      autoSrc: "fr",
+      target: request.target,
+      text: "你好",
+      notice: "领域不可用，已回退百度通用",
+    }));
+    render(App);
+
+    await fireEvent.input(await screen.findByRole("textbox", { name: "原文" }), { target: { value: "bonjour" } });
+    await fireEvent.click(screen.getByRole("button", { name: /^翻译$/ }));
+    expect(await screen.findByText("领域不可用，已回退百度通用")).toBeInTheDocument();
+  });
+
+  it("renders a Baidu field fallback notice in compare mode", async () => {
+    await desktopBridge.saveConfig({
+      ...DEFAULT_CONFIG,
+      autoTranslate: false,
+      compareMode: true,
+      compareEngines: ["baidu"],
+      baidu: { appId: "app", secretKey: "key", domain: "it" },
+    });
+    vi.spyOn(desktopBridge, "translateMulti").mockImplementation(async (request) => ({
+      requestId: request.requestId,
+      source: request.source,
+      autoSrc: "fr",
+      target: request.target,
+      results: {
+        baidu: {
+          requestId: request.requestId,
+          engine: "baidu",
+          text: "你好",
+          notice: "领域不可用，已回退百度通用",
+        },
+      },
+    }));
+    render(App);
+
+    await fireEvent.input(await screen.findByRole("textbox", { name: "原文" }), { target: { value: "bonjour" } });
+    await fireEvent.click(screen.getByRole("button", { name: /^翻译$/ }));
+    expect(await screen.findByText("领域不可用，已回退百度通用")).toBeInTheDocument();
   });
 
   it("normalizes and persists the language route restored from history", async () => {

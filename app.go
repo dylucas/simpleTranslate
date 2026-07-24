@@ -21,7 +21,7 @@ type App struct {
 	dataDir string
 	// eventEmit is injectable for tests; production emits through the Wails runtime.
 	eventEmit func(EngineTranslateResult)
-	// 翻译结果缓存：key = engine|source|target|text，避免重复调用 API
+	// 翻译结果缓存：百度额外包含领域模式，避免通用/领域结果混用。
 	translateCache *lruCache
 	// 语种识别缓存：key = engine|text，同一文本不重复检测
 	detectCache *lruCache
@@ -120,6 +120,7 @@ type TranslateResult struct {
 	AutoSrc   string `json:"autoSrc"`
 	Target    string `json:"target"`
 	Text      string `json:"text"`
+	Notice    string `json:"notice,omitempty"`
 	// 结构化错误信息：成功时为空，失败时填充。
 	// 不再通过 Go error 返回，确保前端总能通过 result 拿到结构化错误用于差异化提示与重试策略。
 	Error     string `json:"error,omitempty"`     // 用户可读错误字符串
@@ -130,6 +131,7 @@ type EngineTranslateResult struct {
 	RequestID string `json:"requestId"`
 	Engine    string `json:"engine"`
 	Text      string `json:"text"`
+	Notice    string `json:"notice,omitempty"`
 	Error     string `json:"error,omitempty"`     // 兼容旧前端：用户可读错误字符串
 	ErrorCode string `json:"errorCode,omitempty"` // 结构化错误类别（credentials/network/timeout/...），前端按类别差异化提示与重试
 }
@@ -156,6 +158,18 @@ type MultiTranslateRequest struct {
 	Source    string   `json:"source"`
 	Target    string   `json:"target"`
 	Engines   []string `json:"engines"`
+}
+
+type engineTranslation struct {
+	Text   string
+	Notice string
+}
+
+type prefetchedTranslation struct {
+	Engine string
+	Text   string
+	Source string
+	Target string
 }
 
 // HistoryEntry 与前端历史记录结构保持一致
@@ -190,25 +204,34 @@ func (a *App) TranslateText(req TranslateRequest) TranslateResult {
 	requestCtx, finish := a.beginTranslation(req.RequestID)
 	defer finish()
 	src := source
+	var prefetched *prefetchedTranslation
 
 	// 自动识别语种（与 TranslateMulti 保持一致：best-effort 跨引擎兜底）
 	if src == "" || src == "auto" {
 		// 优先使用当前引擎；失败时按引擎列表兜底
 		engines := engineFallbackOrder(engine)
-		detected, err := a.detectLanguageBestEffort(requestCtx, text, engines)
+		detected, detectedTranslation, err := a.detectLanguageBestEffort(requestCtx, text, target, engines)
 		if err != nil {
 			te := classifyError(engine, err)
 			te.Message = "语言识别失败：" + te.Message
 			return translateResultError(empty, te)
 		}
 		src = detected
+		prefetched = detectedTranslation
 	}
 
 	// 目标语言兜底
 	tgt := fallbackTarget(src, target)
 
 	// 命中缓存直接返回，避免重复调用 API
-	ck := cacheKey(engine, src, tgt, text)
+	mode, notice, err := a.engineExecutionContext(engine, src, tgt)
+	if err != nil {
+		return translateResultError(empty, classifyError(engine, err))
+	}
+	ck := translationResultCacheKey(engine, mode, src, tgt, text)
+	if reusablePrefetchedTranslation(prefetched, engine, mode, src, tgt) {
+		a.translateCache.set(ck, prefetched.Text)
+	}
 	if v, ok := a.translateCache.get(ck); ok {
 		if err := requestCtx.Err(); err != nil {
 			return translateResultError(empty, classifyError(engine, err))
@@ -219,6 +242,7 @@ func (a *App) TranslateText(req TranslateRequest) TranslateResult {
 			AutoSrc:   src,
 			Target:    tgt,
 			Text:      v,
+			Notice:    notice,
 		}
 	}
 
@@ -236,16 +260,20 @@ func (a *App) TranslateText(req TranslateRequest) TranslateResult {
 		empty.Target = tgt
 		return translateResultError(empty, classifyError(engine, err))
 	}
+	if result.Notice == "" {
+		result.Notice = notice
+	}
 
 	// 写入缓存供下次命中
-	a.translateCache.set(ck, result)
+	a.translateCache.set(ck, result.Text)
 
 	return TranslateResult{
 		RequestID: req.RequestID,
 		Source:    source,
 		AutoSrc:   src,
 		Target:    tgt,
-		Text:      result,
+		Text:      result.Text,
+		Notice:    result.Notice,
 	}
 }
 
@@ -256,7 +284,7 @@ func translateResultError(result TranslateResult, err *TranslateError) Translate
 }
 
 func isSupportedEngine(engine string) bool {
-	return engine == "tencent" || engine == "aliyun"
+	return engine == "tencent" || engine == "aliyun" || engine == "baidu"
 }
 
 func normalizeLanguageCode(code string) string {
@@ -291,24 +319,67 @@ func validateLanguageRoute(source, target string) *TranslateError {
 }
 
 func engineFallbackOrder(engine string) []string {
-	if engine == "aliyun" {
-		return []string{"aliyun", "tencent"}
+	all := []string{"tencent", "aliyun", "baidu"}
+	if !isSupportedEngine(engine) {
+		return all
 	}
-	return []string{"tencent", "aliyun"}
+	out := []string{engine}
+	for _, candidate := range all {
+		if candidate != engine {
+			out = append(out, candidate)
+		}
+	}
+	return out
 }
 
-func (a *App) translateWithEngine(ctx context.Context, engine, text, source, target string) (string, error) {
+func (a *App) translateWithEngine(ctx context.Context, engine, text, source, target string) (engineTranslation, error) {
 	if a.translateInvoke != nil {
-		return a.translateInvoke(ctx, engine, text, source, target)
+		text, err := a.translateInvoke(ctx, engine, text, source, target)
+		return engineTranslation{Text: text}, err
 	}
 	cfg, err := a.GetConfig()
 	if err != nil {
-		return "", err
+		return engineTranslation{}, err
 	}
-	if engine == "aliyun" {
-		return translate.TranslateGeneralWithContext(ctx, text, source, target, cfg.Aliyun)
+	switch engine {
+	case "aliyun":
+		out, err := translate.TranslateGeneralWithContext(ctx, text, source, target, cfg.Aliyun)
+		return engineTranslation{Text: out}, err
+	case "baidu":
+		out, err := translate.TranslateBaiduWithContext(ctx, text, source, target, cfg.Baidu)
+		return engineTranslation{Text: out.Text, Notice: out.Notice}, err
+	default:
+		out, err := translate.TranslateWithContext(ctx, text, source, target, cfg.Tencent)
+		return engineTranslation{Text: out}, err
 	}
-	return translate.TranslateWithContext(ctx, text, source, target, cfg.Tencent)
+}
+
+func (a *App) engineExecutionContext(engine, source, target string) (mode, notice string, err error) {
+	if engine != "baidu" {
+		return "", "", nil
+	}
+	cfg, err := a.GetConfig()
+	if err != nil {
+		return "", "", err
+	}
+	return cfg.Baidu.Domain, translate.BaiduRouteNotice(cfg.Baidu.Domain, source, target), nil
+}
+
+func translationResultCacheKey(engine, mode, source, target, text string) string {
+	if engine == "baidu" {
+		return cacheKey(engine, mode, source, target, text)
+	}
+	return cacheKey(engine, source, target, text)
+}
+
+func reusablePrefetchedTranslation(prefetched *prefetchedTranslation, engine, mode, source, target string) bool {
+	if prefetched == nil || engine != "baidu" || prefetched.Engine != engine {
+		return false
+	}
+	if prefetched.Source != source || prefetched.Target != target {
+		return false
+	}
+	return mode == "general" || !translate.BaiduDomainSupportsRoute(mode, source, target)
 }
 
 // fallbackTarget 当源语言与目标语言相同时，按习惯切换目标语言
@@ -334,7 +405,7 @@ func normalizeEngines(engines []string) []string {
 		if e == "" {
 			continue
 		}
-		if e != "tencent" && e != "aliyun" {
+		if e != "tencent" && e != "aliyun" && e != "baidu" {
 			continue
 		}
 		if seen[e] {
@@ -344,7 +415,7 @@ func normalizeEngines(engines []string) []string {
 		out = append(out, e)
 	}
 	if len(out) == 0 {
-		out = []string{"tencent", "aliyun"}
+		out = []string{"tencent", "aliyun", "baidu"}
 	}
 	return out
 }
@@ -354,17 +425,18 @@ func cacheKey(parts ...string) string {
 	return strings.Join(parts, "\x1f")
 }
 
-// detectLanguageBestEffort 尝试多引擎识别语种，优先命中缓存。
-// Try in given order; prefer aliyun if present because it has dedicated API.
-func (a *App) detectLanguageBestEffort(ctx context.Context, text string, engines []string) (string, error) {
+// detectLanguageBestEffort tries each engine in order. When Baidu's dedicated
+// detector cannot resolve one of the application's languages, general
+// translation with from=auto provides both the language and a reusable result.
+func (a *App) detectLanguageBestEffort(ctx context.Context, text, target string, engines []string) (string, *prefetchedTranslation, error) {
 	var engineErrors []error
 	for _, e := range engines {
 		if err := ctx.Err(); err != nil {
-			return "", err
+			return "", nil, err
 		}
 		// 命中缓存直接返回，避免重复调用
 		if v, ok := a.detectCache.get(cacheKey(e, text)); ok {
-			return v, nil
+			return v, nil, nil
 		}
 		var (
 			lang string
@@ -372,18 +444,48 @@ func (a *App) detectLanguageBestEffort(ctx context.Context, text string, engines
 		)
 		cfg, cfgErr := a.GetConfig()
 		if cfgErr != nil {
-			err = cfgErr
+			engineErrors = append(engineErrors, fmt.Errorf("%s: %w", e, cfgErr))
+			continue
 		} else if e == "aliyun" {
 			lang, err = translate.GetDetectLanguageWithContext(ctx, text, cfg.Aliyun)
+		} else if e == "baidu" {
+			lang, err = translate.DetectBaiduLanguageWithContext(ctx, text, cfg.Baidu)
 		} else {
 			lang, err = translate.DetectLanguageWithContext(ctx, text, cfg.Tencent)
 		}
 		if err == nil && isSupportedLanguage(lang) {
 			if ctx.Err() != nil {
-				return "", ctx.Err()
+				return "", nil, ctx.Err()
 			}
 			a.detectCache.set(cacheKey(e, text), lang)
-			return lang, nil
+			return lang, nil, nil
+		}
+
+		if e == "baidu" {
+			general, generalErr := translate.TranslateBaiduGeneralWithContext(ctx, text, "auto", target, cfg.Baidu)
+			if generalErr == nil && isSupportedLanguage(general.From) {
+				if ctx.Err() != nil {
+					return "", nil, ctx.Err()
+				}
+				a.detectCache.set(cacheKey(e, text), general.From)
+				return general.From, &prefetchedTranslation{
+					Engine: "baidu",
+					Text:   general.Text,
+					Source: general.From,
+					Target: target,
+				}, nil
+			}
+			if err != nil {
+				engineErrors = append(engineErrors, fmt.Errorf("%s: %w", e, err))
+			} else if lang != "" {
+				engineErrors = append(engineErrors, fmt.Errorf("%s: 不支持的识别结果 %q", e, lang))
+			}
+			if generalErr != nil {
+				engineErrors = append(engineErrors, fmt.Errorf("%s general auto: %w", e, generalErr))
+			} else if general.From != "" {
+				engineErrors = append(engineErrors, fmt.Errorf("%s general auto: 不支持的识别结果 %q", e, general.From))
+			}
+			continue
 		}
 		if err != nil {
 			engineErrors = append(engineErrors, fmt.Errorf("%s: %w", e, err))
@@ -393,7 +495,7 @@ func (a *App) detectLanguageBestEffort(ctx context.Context, text string, engines
 			engineErrors = append(engineErrors, fmt.Errorf("%s: 未返回识别结果", e))
 		}
 	}
-	return "", errors.Join(engineErrors...)
+	return "", nil, errors.Join(engineErrors...)
 }
 
 // engineTimeout 单引擎翻译最大等待时间。
@@ -411,6 +513,7 @@ func (a *App) TranslateMulti(req MultiTranslateRequest) MultiTranslateResult {
 	target = normalizeLanguageCode(target)
 	engines = normalizeEngines(engines)
 	src := source
+	var prefetched *prefetchedTranslation
 	emptyRes := MultiTranslateResult{RequestID: req.RequestID, Source: source, Target: target, Results: map[string]EngineTranslateResult{}}
 	if strings.TrimSpace(text) == "" {
 		err := newTranslateError(ErrCodeInvalidInput, "", "输入文本为空", nil)
@@ -426,7 +529,7 @@ func (a *App) TranslateMulti(req MultiTranslateRequest) MultiTranslateResult {
 
 	// 自动识别一次，供所有引擎共用
 	if src == "" || src == "auto" {
-		detected, err := a.detectLanguageBestEffort(requestCtx, text, engines)
+		detected, detectedTranslation, err := a.detectLanguageBestEffort(requestCtx, text, target, engines)
 		if err != nil {
 			te := classifyError("", err)
 			te.Message = "语言识别失败：" + te.Message
@@ -435,6 +538,7 @@ func (a *App) TranslateMulti(req MultiTranslateRequest) MultiTranslateResult {
 			return emptyRes
 		}
 		src = detected
+		prefetched = detectedTranslation
 	}
 
 	tgt := fallbackTarget(src, target)
@@ -458,8 +562,21 @@ func (a *App) TranslateMulti(req MultiTranslateRequest) MultiTranslateResult {
 				return
 			}
 
+			mode, notice, configErr := a.engineExecutionContext(engine, src, tgt)
+			if configErr != nil {
+				te := classifyError(engine, configErr)
+				r.Error = te.Message
+				r.ErrorCode = te.Code
+				mu.Lock()
+				results[engine] = r
+				mu.Unlock()
+				return
+			}
 			// 命中缓存直接用，跳过 API 调用
-			ck := cacheKey(engine, src, tgt, text)
+			ck := translationResultCacheKey(engine, mode, src, tgt, text)
+			if reusablePrefetchedTranslation(prefetched, engine, mode, src, tgt) {
+				a.translateCache.set(ck, prefetched.Text)
+			}
 			if v, ok := a.translateCache.get(ck); ok {
 				if err := requestCtx.Err(); err != nil {
 					te := classifyError(engine, err)
@@ -467,6 +584,7 @@ func (a *App) TranslateMulti(req MultiTranslateRequest) MultiTranslateResult {
 					r.ErrorCode = te.Code
 				} else {
 					r.Text = v
+					r.Notice = notice
 				}
 				mu.Lock()
 				results[engine] = r
@@ -488,9 +606,13 @@ func (a *App) TranslateMulti(req MultiTranslateRequest) MultiTranslateResult {
 				r.Error = te.Message
 				r.ErrorCode = te.Code
 			} else {
-				r.Text = out
+				r.Text = out.Text
+				r.Notice = out.Notice
+				if r.Notice == "" {
+					r.Notice = notice
+				}
 				// Only successful, non-cancelled requests may populate the cache.
-				a.translateCache.set(ck, out)
+				a.translateCache.set(ck, out.Text)
 			}
 
 			mu.Lock()
@@ -558,6 +680,22 @@ func (a *App) TestConnection(engine string, service ServiceConfig) error {
 	default:
 		return fmt.Errorf("未知引擎: %s", engine)
 	}
+}
+
+// TestBaiduConnection validates draft Baidu credentials without persisting
+// them. The selected translation endpoint is exercised with a supported route.
+func (a *App) TestBaiduConnection(service BaiduConfig) error {
+	ctx, cancel := context.WithTimeout(context.Background(), engineTimeout)
+	defer cancel()
+	service.Domain = strings.ToLower(strings.TrimSpace(service.Domain))
+	probe, source, target := "hello", "en", "zh"
+	if service.Domain == "novel" || service.Domain == "wiki" {
+		probe, source, target = "你好", "zh", "en"
+	}
+	if _, err := translate.TranslateBaiduWithContext(ctx, probe, source, target, service); err != nil {
+		return fmt.Errorf("百度翻译连接测试失败: %v", err)
+	}
+	return nil
 }
 
 // getHistoryPath 返回历史记录文件路径

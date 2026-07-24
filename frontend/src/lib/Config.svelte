@@ -6,14 +6,14 @@
   import { tick } from "svelte";
   import { cloneConfig, DEFAULT_CONFIG } from "./bridge";
   import { ARIA_SHORTCUTS } from "./shortcuts";
-  import type { CloudConfig, EngineId, ServiceConfig } from "./types";
+  import type { BaiduConfig, BaiduDomain, CloudConfig, EngineId, ServiceConfig } from "./types";
 
   interface Props {
     open: boolean;
     config: CloudConfig;
     onClose: () => void;
     onSave: (config: CloudConfig) => Promise<void>;
-    onTest: (engine: EngineId, service: ServiceConfig) => Promise<void>;
+    onTest: (engine: EngineId, service: ServiceConfig | BaiduConfig) => Promise<void>;
   }
 
   interface ConnectionState { testing: boolean; ok: boolean; message: string; }
@@ -25,14 +25,17 @@
   let showTencentKey = $state(false);
   let showAliyunId = $state(false);
   let showAliyunKey = $state(false);
+  let showBaiduId = $state(false);
+  let showBaiduKey = $state(false);
   let connection = $state<Partial<Record<EngineId, ConnectionState>>>({});
   let modal = $state<HTMLElement>();
   let wasOpen = false;
-  const connectionRuns: Record<EngineId, number> = { tencent: 0, aliyun: 0 };
+  const connectionRuns: Record<EngineId, number> = { tencent: 0, aliyun: 0, baidu: 0 };
 
   function resetConnectionTests(): void {
     connectionRuns.tencent += 1;
     connectionRuns.aliyun += 1;
+    connectionRuns.baidu += 1;
     connection = {};
   }
 
@@ -49,10 +52,16 @@
     }
   });
 
-  function updateService(engine: EngineId, key: keyof ServiceConfig, value: string): void {
+  function updateService(engine: "tencent" | "aliyun", key: keyof ServiceConfig, value: string): void {
     draft[engine] = { ...draft[engine], [key]: value };
     connectionRuns[engine] += 1;
     connection[engine] = undefined;
+  }
+
+  function updateBaidu(key: keyof BaiduConfig, value: string): void {
+    draft.baidu = { ...draft.baidu, [key]: value } as BaiduConfig;
+    connectionRuns.baidu += 1;
+    connection.baidu = undefined;
   }
 
   function close(): void {
@@ -128,7 +137,7 @@
         <h3><Cpu size={15} />核心偏好</h3>
         <label class="setting-row"><span><strong>默认翻译引擎</strong><small>单引擎模式和对照首选结果</small></span>
           <select value={draft.defaultEngine} onchange={(event) => (draft.defaultEngine = event.currentTarget.value as EngineId)} aria-label="默认翻译引擎">
-            <option value="tencent">腾讯混元</option><option value="aliyun">阿里云 MT</option>
+            <option value="tencent">腾讯混元</option><option value="aliyun">阿里云 MT</option><option value="baidu">百度翻译</option>
           </select>
         </label>
       </section>
@@ -158,6 +167,34 @@
             <RefreshCcw size={14} class={connection.aliyun?.testing ? "spin" : ""} />{connection.aliyun?.testing ? "测试中" : "测试连接"}
           </button>
           {#if connection.aliyun?.message}<span class:ok={connection.aliyun.ok} class="test-message">{#if connection.aliyun.ok}<CheckCircle2 size={14} />{:else}<XCircle size={14} />{/if}{connection.aliyun.message}</span>{/if}
+        </div>
+      </section>
+
+      <section class="settings-section">
+        <h3><Cloud size={15} />百度翻译</h3>
+        <div class="fields two-columns">
+          <label><span>APP ID</span><div class="input-wrap"><KeyRound size={15} /><input type={showBaiduId ? "text" : "password"} value={draft.baidu.appId} oninput={(event) => updateBaidu("appId", event.currentTarget.value)} /><button type="button" onclick={() => (showBaiduId = !showBaiduId)} aria-label="显示或隐藏百度 APP ID">{#if showBaiduId}<EyeOff size={15} />{:else}<Eye size={15} />{/if}</button></div></label>
+          <label><span>密钥</span><div class="input-wrap"><KeyRound size={15} /><input type={showBaiduKey ? "text" : "password"} value={draft.baidu.secretKey} oninput={(event) => updateBaidu("secretKey", event.currentTarget.value)} /><button type="button" onclick={() => (showBaiduKey = !showBaiduKey)} aria-label="显示或隐藏百度密钥">{#if showBaiduKey}<EyeOff size={15} />{:else}<Eye size={15} />{/if}</button></div></label>
+          <label class="endpoint"><span>翻译领域</span><select value={draft.baidu.domain} onchange={(event) => updateBaidu("domain", event.currentTarget.value as BaiduDomain)} aria-label="百度翻译领域">
+            <option value="general">通用</option>
+            <option value="it">信息技术</option>
+            <option value="finance">金融财经</option>
+            <option value="machinery">机械制造</option>
+            <option value="senimed">生物医药</option>
+            <option value="novel">网络文学</option>
+            <option value="academic">学术论文</option>
+            <option value="aerospace">航空航天</option>
+            <option value="wiki">人文社科</option>
+            <option value="news">新闻资讯</option>
+            <option value="law">法律法规</option>
+            <option value="contract">合同</option>
+          </select></label>
+        </div>
+        <div class="test-row">
+          <button class="test-btn" onclick={() => void test("baidu")} disabled={connection.baidu?.testing || !draft.baidu.appId.trim() || !draft.baidu.secretKey.trim()} aria-label="测试百度翻译连接">
+            <RefreshCcw size={14} class={connection.baidu?.testing ? "spin" : ""} />{connection.baidu?.testing ? "测试中" : "测试连接"}
+          </button>
+          {#if connection.baidu?.message}<span class:ok={connection.baidu.ok} class="test-message">{#if connection.baidu.ok}<CheckCircle2 size={14} />{:else}<XCircle size={14} />{/if}{connection.baidu.message}</span>{/if}
         </div>
       </section>
     </main>
