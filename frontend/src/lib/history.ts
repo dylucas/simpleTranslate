@@ -2,7 +2,7 @@
 // 与 App.svelte 解耦，便于在测试或其他组件中复用。
 import type { HistoryEntry } from "./types";
 
-// 历史记录最大条数，与后端 SaveHistory 的上限保持一致
+// 历史记录最大条数，与后端持久化上限保持一致
 export const HISTORY_LIMIT = 200;
 
 // formatHistoryTime 统一历史记录的时间格式（月/日 时:分）

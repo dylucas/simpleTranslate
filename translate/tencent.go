@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"regexp"
 	"strings"
@@ -115,7 +114,7 @@ func chatCompletionWithAPIKeyContext(ctx context.Context, prompt, apiKey string)
 	}
 	defer resp.Body.Close()
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := readAPIResponse(resp.Body)
 	if err != nil {
 		return "", fmt.Errorf("读取混元 API 响应失败: %w", err)
 	}

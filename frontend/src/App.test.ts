@@ -8,7 +8,7 @@ describe("standalone app", () => {
   beforeEach(async () => {
     vi.restoreAllMocks();
     await desktopBridge.saveConfig(DEFAULT_CONFIG);
-    await desktopBridge.saveHistory([]);
+    await desktopBridge.clearHistory();
   });
 
   afterEach(() => vi.restoreAllMocks());
@@ -110,14 +110,14 @@ describe("standalone app", () => {
   });
 
   it("normalizes and persists the language route restored from history", async () => {
-    await desktopBridge.saveHistory([{
+    await desktopBridge.appendHistory({
       id: 1,
       input: "legacy input",
       output: "legacy output",
       source: "ja",
       target: "ko",
       time: "2026-07-22 19:00",
-    }]);
+    });
     const saveConfig = vi.spyOn(desktopBridge, "saveConfig");
     render(App);
 
@@ -138,14 +138,14 @@ describe("standalone app", () => {
       ...DEFAULT_CONFIG,
       tencent: { ...DEFAULT_CONFIG.tencent, secretKey: "sk-test" },
     });
-    await desktopBridge.saveHistory([{
+    await desktopBridge.appendHistory({
       id: 2,
       input: "saved input",
       output: "saved output",
       source: "en",
       target: "zh",
       time: "2026-07-23 10:00",
-    }]);
+    });
     const translateText = vi.spyOn(desktopBridge, "translateText");
     render(App);
 

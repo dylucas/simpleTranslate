@@ -5,9 +5,11 @@ import type { HistoryEntry } from "./types";
 
 interface HistoryProps {
   open: boolean;
-  history: HistoryEntry[];
+  queryHistory: (query: { query: string; offset: number; limit: number }) => Promise<{ entries: HistoryEntry[]; total: number; hasMore: boolean }>;
   onClose: () => void;
-  onClear: () => void;
+  onClear: () => Promise<void>;
+  onExport: () => Promise<boolean>;
+  onError: (message: string) => void;
   onSelect: (entry: HistoryEntry) => void;
 }
 
@@ -17,11 +19,18 @@ const history: HistoryEntry[] = [
 ];
 
 function renderHistory(overrides: Partial<HistoryProps> = {}) {
+  const source = "history" in overrides ? (overrides as unknown as { history: HistoryEntry[] }).history : history;
   const props: HistoryProps = {
     open: true,
-    history,
+    queryHistory: vi.fn(async ({ query, offset, limit }) => {
+      const needle = query.toLowerCase();
+      const filtered = needle ? source.filter((item) => item.input.toLowerCase().includes(needle) || item.output.toLowerCase().includes(needle)) : source;
+      return { entries: filtered.slice(offset, offset + limit), total: filtered.length, hasMore: offset + limit < filtered.length };
+    }),
     onClose: vi.fn(),
-    onClear: vi.fn(),
+    onClear: vi.fn(async () => undefined),
+    onExport: vi.fn(async () => true),
+    onError: vi.fn(),
     onSelect: vi.fn(),
     ...overrides,
   };
@@ -33,27 +42,27 @@ describe("history drawer", () => {
   it("shows localized language routes and filters source and translated text", async () => {
     renderHistory();
 
-    expect(screen.getByText("2 条记录")).toBeInTheDocument();
+    expect(await screen.findByText("2 条记录")).toBeInTheDocument();
     expect(screen.getByText("自动识别")).toBeInTheDocument();
     expect(screen.getAllByText("中文")).toHaveLength(2);
 
     const search = screen.getByRole("textbox", { name: "搜索翻译记录" });
     await waitFor(() => expect(search).toHaveFocus());
     await fireEvent.input(search, { target: { value: "goodbye" } });
-    expect(screen.getByText("1 / 2 条记录")).toBeInTheDocument();
-    expect(screen.getByText("再见")).toBeInTheDocument();
+    expect(await screen.findByText("1 条匹配记录", {}, { timeout: 1000 })).toBeInTheDocument();
+    expect(await screen.findByText("再见")).toBeInTheDocument();
     expect(screen.queryByText("hello world")).not.toBeInTheDocument();
 
     await fireEvent.input(search, { target: { value: "missing" } });
-    expect(screen.getByText("0 / 2 条记录")).toBeInTheDocument();
-    expect(screen.getByText("没有匹配记录")).toBeInTheDocument();
+    expect(await screen.findByText("0 条匹配记录", {}, { timeout: 1000 })).toBeInTheDocument();
+    expect(await screen.findByText("没有匹配记录")).toBeInTheDocument();
     await fireEvent.click(screen.getByText("清除搜索", { selector: "button" }));
-    expect(screen.getByText("2 条记录")).toBeInTheDocument();
+    expect(await screen.findByText("2 条记录", {}, { timeout: 1000 })).toBeInTheDocument();
   });
 
   it("selects entries and keeps destructive clearing behind confirmation", async () => {
     const props = renderHistory();
-    const entryButton = screen.getByText("hello world").closest("button");
+    const entryButton = (await screen.findByText("hello world")).closest("button");
     expect(entryButton).not.toBeNull();
     await fireEvent.click(entryButton!);
     expect(props.onSelect).toHaveBeenCalledWith(history[0]);
@@ -78,15 +87,35 @@ describe("history drawer", () => {
     expect(props.onClose).toHaveBeenCalledOnce();
   });
 
-  it("renders legacy entries that have duplicate ids", () => {
+  it("renders legacy entries that have duplicate ids", async () => {
     renderHistory({
-      history: [
+      queryHistory: async () => ({ entries: [
         { ...history[0], id: 1 },
         { ...history[1], id: 1 },
-      ],
+      ], total: 2, hasMore: false }),
     });
 
-    expect(screen.getByText("hello world")).toBeInTheDocument();
-    expect(screen.getByText("再见")).toBeInTheDocument();
+    expect(await screen.findByText("hello world")).toBeInTheDocument();
+    expect(await screen.findByText("再见")).toBeInTheDocument();
+  });
+
+  it("loads ten entries at a time and releases them when closed", async () => {
+    const many = Array.from({ length: 12 }, (_, id) => ({ ...history[0], id, input: `input-${id}` }));
+    const queryHistory = vi.fn(async ({ offset, limit }) => ({
+      entries: many.slice(offset, offset + limit), total: many.length, hasMore: offset + limit < many.length,
+    }));
+    const { rerender } = render(History, {
+      open: true, queryHistory, onClose: vi.fn(), onClear: vi.fn(async () => undefined),
+      onExport: vi.fn(async () => true), onError: vi.fn(), onSelect: vi.fn(),
+    });
+
+    expect(await screen.findByText("input-0")).toBeInTheDocument();
+    expect(screen.queryByText("input-10")).not.toBeInTheDocument();
+    expect(queryHistory).toHaveBeenCalledWith({ query: "", offset: 0, limit: 10 });
+    await fireEvent.click(screen.getByRole("button", { name: "加载更多" }));
+    expect(await screen.findByText("input-10")).toBeInTheDocument();
+
+    await rerender({ open: false, queryHistory, onClose: vi.fn(), onClear: vi.fn(async () => undefined), onExport: vi.fn(async () => true), onError: vi.fn(), onSelect: vi.fn() });
+    expect(screen.queryByText("input-0")).not.toBeInTheDocument();
   });
 });

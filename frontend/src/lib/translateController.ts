@@ -17,6 +17,7 @@ import type {
   HistoryEntry,
   TranslateErrorCode,
 } from "./types";
+import { MAX_INPUT_BYTES, utf8ByteLength } from "./textLimits";
 
 export interface TranslationState {
   isProcessing: boolean;
@@ -40,8 +41,9 @@ export interface TranslateControllerDeps {
   getBaiduDomain: () => BaiduDomain;
   getCompareMode: () => boolean;
   getCompareEngines: () => EngineId[];
-  getHistory: () => HistoryEntry[];
-  setHistory: (updater: (history: HistoryEntry[]) => HistoryEntry[]) => void;
+  appendHistory?: (entry: HistoryEntry) => Promise<boolean>;
+  getHistory?: () => HistoryEntry[];
+  setHistory?: (updater: (history: HistoryEntry[]) => HistoryEntry[]) => void;
   setTarget: (target: string) => void;
 }
 
@@ -151,9 +153,14 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
   }
 
   function addHistory(input: string, output: string, source: string, target: string): void {
-    if (!output || isDuplicateRecent(deps.getHistory(), input, source, target)) return;
+    if (!output) return;
     const entry = createHistoryEntry({ input, output, source, target });
-    deps.setHistory((history) => prependHistory(history, entry));
+    if (deps.appendHistory) {
+      void deps.appendHistory(entry).catch(() => showError("历史记录保存失败"));
+      return;
+    }
+    const history = deps.getHistory?.() ?? [];
+    if (!isDuplicateRecent(history, input, source, target)) deps.setHistory?.((current) => prependHistory(current, entry));
   }
 
   const unsubscribeEngineResult = deps.bridge.onEngineResult((payload) => {
@@ -173,6 +180,10 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
     if (destroyed) return;
     const input = deps.getInput();
     if (!input.trim()) return;
+    if (utf8ByteLength(input) > MAX_INPUT_BYTES) {
+      showError({ errorCode: ErrorCodes.InvalidInput, error: `原文不能超过 ${MAX_INPUT_BYTES} 个 UTF-8 字节` });
+      return;
+    }
     if (autoTimer) {
       clearTimeout(autoTimer);
       autoTimer = null;

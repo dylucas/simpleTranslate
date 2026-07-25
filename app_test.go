@@ -1,14 +1,19 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"simpleTranslate/config"
 )
 
@@ -297,11 +302,11 @@ func TestSaveLoadHistory_RoundTrip(t *testing.T) {
 		{ID: 2, Input: "world", Output: "世界", Source: "en", Target: "zh", Time: "10:01"},
 	}
 
-	if err := app.SaveHistory(entries); err != nil {
+	if err := app.saveHistory(entries); err != nil {
 		t.Fatalf("SaveHistory 失败: %v", err)
 	}
 
-	got, err := app.LoadHistory()
+	got, err := app.loadHistory()
 	if err != nil {
 		t.Fatalf("LoadHistory 失败: %v", err)
 	}
@@ -317,7 +322,7 @@ func TestLoadHistory_MissingFile(t *testing.T) {
 	_ = os.Remove(path)
 	defer os.Remove(path)
 
-	got, err := app.LoadHistory()
+	got, err := app.loadHistory()
 	if err != nil {
 		t.Fatalf("期望 nil 错误，得到 %v", err)
 	}
@@ -339,11 +344,11 @@ func TestSaveHistory_TruncatesTo200(t *testing.T) {
 		entries[i] = HistoryEntry{ID: int64(i), Input: "text", Output: "out", Source: "en", Target: "zh", Time: "10:00"}
 	}
 
-	if err := app.SaveHistory(entries); err != nil {
+	if err := app.saveHistory(entries); err != nil {
 		t.Fatalf("SaveHistory 失败: %v", err)
 	}
 
-	got, err := app.LoadHistory()
+	got, err := app.loadHistory()
 	if err != nil {
 		t.Fatalf("LoadHistory 失败: %v", err)
 	}
@@ -359,11 +364,11 @@ func TestSaveHistory_EmptyList(t *testing.T) {
 	_ = os.Remove(path)
 	defer os.Remove(path)
 
-	if err := app.SaveHistory([]HistoryEntry{}); err != nil {
+	if err := app.saveHistory([]HistoryEntry{}); err != nil {
 		t.Fatalf("SaveHistory 失败: %v", err)
 	}
 
-	got, err := app.LoadHistory()
+	got, err := app.loadHistory()
 	if err != nil {
 		t.Fatalf("LoadHistory 失败: %v", err)
 	}
@@ -383,7 +388,7 @@ func TestLoadHistory_InvalidJSON(t *testing.T) {
 		t.Fatalf("写入测试文件失败: %v", err)
 	}
 
-	_, err := app.LoadHistory()
+	_, err := app.loadHistory()
 	if err == nil {
 		t.Error("损坏 JSON 期望返回错误，得到 nil")
 	}
@@ -395,7 +400,7 @@ func TestLoadHistory_NormalizesNullAndOversizedFiles(t *testing.T) {
 		if err := os.WriteFile(app.getHistoryPath(), []byte("null"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		got, err := app.LoadHistory()
+		got, err := app.loadHistory()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -417,7 +422,7 @@ func TestLoadHistory_NormalizesNullAndOversizedFiles(t *testing.T) {
 		if err := os.WriteFile(app.getHistoryPath(), data, 0600); err != nil {
 			t.Fatal(err)
 		}
-		got, err := app.LoadHistory()
+		got, err := app.loadHistory()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -434,6 +439,91 @@ func TestGetHistoryPath_CreatesDir(t *testing.T) {
 	dir := filepath.Dir(path)
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		t.Errorf("期望目录已创建: %s", dir)
+	}
+}
+
+func TestQueryAppendClearHistory(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	for i := 0; i < 25; i++ {
+		entry := HistoryEntry{ID: int64(i), Input: fmt.Sprintf("input-%02d", i), Output: fmt.Sprintf("output-%02d", i), Source: "en", Target: "zh", Time: "now"}
+		added, err := app.AppendHistory(entry)
+		if err != nil || !added {
+			t.Fatalf("append %d: added=%v err=%v", i, added, err)
+		}
+	}
+	page, err := app.QueryHistory(HistoryQuery{Offset: 0, Limit: 10})
+	if err != nil || len(page.Entries) != 10 || page.Total != 25 || !page.HasMore {
+		t.Fatalf("first page = %+v err=%v", page, err)
+	}
+	search, err := app.QueryHistory(HistoryQuery{Query: "INPUT-02", Limit: 10})
+	if err != nil || search.Total != 1 || search.Entries[0].Input != "input-02" {
+		t.Fatalf("search = %+v err=%v", search, err)
+	}
+	added, err := app.AppendHistory(page.Entries[0])
+	if err != nil || added {
+		t.Fatalf("latest duplicate: added=%v err=%v", added, err)
+	}
+	if err := app.ClearHistory(); err != nil {
+		t.Fatal(err)
+	}
+	empty, err := app.QueryHistory(HistoryQuery{})
+	if err != nil || empty.Total != 0 || empty.Entries == nil {
+		t.Fatalf("cleared page = %+v err=%v", empty, err)
+	}
+}
+
+func TestAppendHistoryConcurrentKeepsLimit(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	var wg sync.WaitGroup
+	for i := 0; i < 240; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			_, err := app.AppendHistory(HistoryEntry{ID: int64(id), Input: fmt.Sprintf("input-%03d", id), Output: "output", Source: "en", Target: "zh"})
+			if err != nil {
+				t.Errorf("append %d: %v", id, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	page, err := app.QueryHistory(HistoryQuery{Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 200 || len(page.Entries) != 50 || !page.HasMore {
+		t.Fatalf("concurrent page = %+v", page)
+	}
+}
+
+func TestExportHistoryCancelAndSuccess(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	if _, err := app.AppendHistory(HistoryEntry{ID: 1, Input: "hello", Output: "你好", Source: "en", Target: "zh"}); err != nil {
+		t.Fatal(err)
+	}
+	app.saveFileDialog = func(context.Context, runtime.SaveDialogOptions) (string, error) { return "", nil }
+	if exported, err := app.ExportHistory(); err != nil || exported {
+		t.Fatalf("cancel: exported=%v err=%v", exported, err)
+	}
+	path := filepath.Join(t.TempDir(), "export.json")
+	app.saveFileDialog = func(context.Context, runtime.SaveDialogOptions) (string, error) { return path, nil }
+	if exported, err := app.ExportHistory(); err != nil || !exported {
+		t.Fatalf("success: exported=%v err=%v", exported, err)
+	}
+	if data, err := os.ReadFile(path); err != nil || !bytes.Contains(data, []byte("hello")) {
+		t.Fatalf("export data=%q err=%v", data, err)
+	}
+}
+
+func TestTranslateRejectsOversizedInput(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	input := strings.Repeat("a", maxInputBytes+1)
+	result := app.TranslateText(TranslateRequest{Text: input, Source: "en", Target: "zh", Engine: "tencent"})
+	if result.ErrorCode != ErrCodeInvalidInput {
+		t.Fatalf("single error code = %q", result.ErrorCode)
+	}
+	multi := app.TranslateMulti(MultiTranslateRequest{Text: input, Source: "en", Target: "zh", Engines: []string{"tencent"}})
+	if multi.Results["tencent"].ErrorCode != ErrCodeInvalidInput {
+		t.Fatalf("multi result = %+v", multi.Results)
 	}
 }
 

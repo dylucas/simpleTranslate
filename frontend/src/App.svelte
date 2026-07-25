@@ -4,12 +4,12 @@
   import { desktopBridge } from "./lib/bridge";
   import { createClipboardWatcher } from "./lib/clipboard";
   import { createConfigController, normalizeConfig } from "./lib/configController";
-  import { createHistoryPersistence } from "./lib/historyPersistence";
   import { engineLabel, isEngineConfigured } from "./lib/engines";
   import { langs, getSpeechLang } from "./lib/languages";
   import { ARIA_SHORTCUTS, createShortcutHandler } from "./lib/shortcuts";
   import { createSpeaker } from "./lib/speech";
   import { createTranslateController, type TranslateController } from "./lib/translateController";
+  import { MAX_INPUT_BYTES, truncateUtf8, utf8ByteLength } from "./lib/textLimits";
   import type { BaiduDomain, EngineId, HistoryEntry } from "./lib/types";
   import ComparePanel from "./lib/ComparePanel.svelte";
   import Config from "./lib/Config.svelte";
@@ -24,7 +24,6 @@
   let target = $state("zh");
   let showConfig = $state(false);
   let showHistory = $state(false);
-  let history = $state<HistoryEntry[]>([]);
   let suppressAuto = $state(false);
   let skipAutoForInput: string | null = null;
   let copied = $state(false);
@@ -53,11 +52,6 @@
     void operation.catch(() => undefined);
   }
 
-  const historyPersistence = createHistoryPersistence(
-    (entries) => desktopBridge.saveHistory(entries),
-    () => controller.showError("历史记录保存失败"),
-  );
-
   controller = createTranslateController({
     bridge: desktopBridge,
     getInput: () => input,
@@ -67,11 +61,7 @@
     getBaiduDomain: () => config.baidu.domain,
     getCompareMode: () => config.compareMode,
     getCompareEngines: () => availableCompareEngines,
-    getHistory: () => history,
-    setHistory: (update) => {
-      history = update(history);
-      historyPersistence.schedule(history);
-    },
+    appendHistory: (entry) => desktopBridge.appendHistory(entry),
     setTarget: (next) => {
       if (target === next) return;
       skipAutoForInput = input;
@@ -91,9 +81,12 @@
   let credentialsReady = $derived(config.compareMode
     ? availableCompareEngines.length > 0
     : isConfigured(config.defaultEngine));
-  let canTranslate = $derived(Boolean(input.trim()) && credentialsReady);
+  let inputBytes = $derived(utf8ByteLength(input));
+  let canTranslate = $derived(Boolean(input.trim()) && inputBytes <= MAX_INPUT_BYTES && credentialsReady);
   let unavailableReason = $derived(!input.trim()
     ? "请输入文本"
+    : inputBytes > MAX_INPUT_BYTES
+      ? `原文不能超过 ${MAX_INPUT_BYTES} 个 UTF-8 字节`
     : !credentialsReady
       ? "请先配置翻译凭据"
       : "");
@@ -248,6 +241,12 @@
     controller.clear();
   }
 
+  function updateInput(value: string): void {
+    const next = truncateUtf8(value);
+    input = next;
+    if (next !== value) controller.showError({ errorCode: "invalid_input", error: `原文不能超过 ${MAX_INPUT_BYTES} 个 UTF-8 字节` });
+  }
+
   function toggleTheme(): void {
     if (showConfig) return;
     persistConfig(configController.patch("isDark", !config.isDark));
@@ -299,17 +298,11 @@
 
   onMount(async () => {
     await configController.load();
-    try {
-      history = await desktopBridge.loadHistory();
-    } catch {
-      controller.showError("历史记录加载失败");
-    }
     for (const message of queuedErrors) controller.showError(message);
     queuedErrors = [];
   });
 
   onDestroy(() => {
-    void historyPersistence.flush();
     controller.destroy();
     clipboardWatcher.stop();
     speaker.stop();
@@ -355,9 +348,9 @@
       <section class="editor-pane" aria-labelledby="source-title">
         <header class="pane-header">
           <div class="pane-title"><span class="pane-icon"><TextCursorInput size={14} /></span><span class="pane-label">输入</span><h2 id="source-title">原文</h2></div>
-          <span class="char-count">{input.length} 字符</span>
+          <span class="char-count">{inputBytes} / {MAX_INPUT_BYTES} 字节</span>
         </header>
-        <textarea class="editor" bind:this={inputElement} bind:value={input} placeholder="输入要翻译的文本" aria-label="原文" aria-keyshortcuts={ARIA_SHORTCUTS.focusInput} spellcheck="false"></textarea>
+        <textarea class="editor" bind:this={inputElement} value={input} oninput={(event) => updateInput(event.currentTarget.value)} placeholder="输入要翻译的文本" aria-label="原文" aria-keyshortcuts={ARIA_SHORTCUTS.focusInput} spellcheck="false"></textarea>
         <footer class="pane-footer">
           <span class="pane-note">{config.autoTranslate ? "自动翻译" : "手动翻译"}</span>
           <div class="pane-actions">
@@ -396,7 +389,7 @@
   </main>
 
   <Config open={showConfig} {config} onClose={closePanels} onSave={(next) => configController.save(next)} onTest={(engine, service) => desktopBridge.testConnection(engine, service)} />
-  <History open={showHistory} {history} onClose={closePanels} onClear={() => { history = []; historyPersistence.schedule(history); }} onSelect={restoreHistoryEntry} />
+  <History open={showHistory} queryHistory={(query) => desktopBridge.queryHistory(query)} onClear={() => desktopBridge.clearHistory()} onExport={() => desktopBridge.exportHistory()} onError={(message) => controller.showError(message)} onClose={closePanels} onSelect={restoreHistoryEntry} />
 </div>
 
 <style>

@@ -42,7 +42,7 @@ test("main translation workflow remains usable", async ({ page }) => {
   }
 
   await historySearch.fill("hello");
-  await expect(historyDialog.getByText("1 / 1 条记录", { exact: true })).toBeVisible();
+  await expect(historyDialog.getByText("1 条匹配记录", { exact: true })).toBeVisible();
 
   const historyLayout = await page.evaluate(() => {
     const drawer = document.querySelector<HTMLElement>(".drawer");

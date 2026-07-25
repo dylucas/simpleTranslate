@@ -1,8 +1,10 @@
 import {
   GetConfig,
-  LoadHistory,
+  AppendHistory,
+  ClearHistory,
+  ExportHistory,
   SaveConfig,
-  SaveHistory,
+  QueryHistory,
   TestBaiduConnection,
   TestConnection,
   CancelTranslation,
@@ -17,6 +19,8 @@ import type {
   EngineId,
   EngineTranslateResult,
   HistoryEntry,
+  HistoryPage,
+  HistoryQuery,
   MultiTranslateRequest,
   MultiTranslateResult,
   ServiceConfig,
@@ -28,8 +32,10 @@ export interface DesktopBridge {
   readonly kind: "wails" | "mock";
   getConfig(): Promise<CloudConfig>;
   saveConfig(config: CloudConfig): Promise<void>;
-  loadHistory(): Promise<HistoryEntry[]>;
-  saveHistory(history: HistoryEntry[]): Promise<void>;
+  queryHistory(query: HistoryQuery): Promise<HistoryPage>;
+  appendHistory(entry: HistoryEntry): Promise<boolean>;
+  clearHistory(): Promise<void>;
+  exportHistory(): Promise<boolean>;
   testConnection(engine: EngineId, service: ServiceConfig | BaiduConfig): Promise<void>;
   translateText(request: TranslateRequest): Promise<TranslateResult>;
   translateMulti(request: MultiTranslateRequest): Promise<MultiTranslateResult>;
@@ -70,8 +76,10 @@ function createWailsBridge(): DesktopBridge {
     kind: "wails",
     getConfig: () => GetConfig() as Promise<CloudConfig>,
     saveConfig: (config) => SaveConfig(wailsConfig.CloudConfig.createFrom(config)),
-    loadHistory: () => LoadHistory() as Promise<HistoryEntry[]>,
-    saveHistory: (history) => SaveHistory(history),
+    queryHistory: (query) => QueryHistory(query) as Promise<HistoryPage>,
+    appendHistory: (entry) => AppendHistory(entry),
+    clearHistory: () => ClearHistory(),
+    exportHistory: () => ExportHistory(),
     testConnection: (engine, service) => engine === "baidu"
       ? TestBaiduConnection(service as BaiduConfig)
       : TestConnection(engine, service as ServiceConfig),
@@ -110,11 +118,30 @@ export function createMockBridge(initial: CloudConfig = DEFAULT_CONFIG): Desktop
     async saveConfig(next) {
       config = cloneConfig(next);
     },
-    async loadHistory() {
-      return history.map((item) => ({ ...item }));
+    async queryHistory(request) {
+      const needle = request.query.trim().toLowerCase();
+      const filtered = needle
+        ? history.filter((item) => item.input.toLowerCase().includes(needle) || item.output.toLowerCase().includes(needle))
+        : history;
+      const offset = Math.max(0, request.offset);
+      const limit = Math.min(50, Math.max(1, request.limit));
+      return {
+        entries: filtered.slice(offset, offset + limit).map((item) => ({ ...item })),
+        total: filtered.length,
+        hasMore: offset + limit < filtered.length,
+      };
     },
-    async saveHistory(next) {
-      history = next.map((item) => ({ ...item }));
+    async appendHistory(entry) {
+      const latest = history[0];
+      if (latest && latest.input === entry.input && latest.source === entry.source && latest.target === entry.target) return false;
+      history = [{ ...entry }, ...history].slice(0, 200);
+      return true;
+    },
+    async clearHistory() {
+      history = [];
+    },
+    async exportHistory() {
+      return history.length > 0;
     },
     async testConnection(engine, service) {
       const valid = engine === "baidu"
@@ -126,6 +153,7 @@ export function createMockBridge(initial: CloudConfig = DEFAULT_CONFIG): Desktop
     },
     async translateText(request) {
       if (cancelledRequests.has(request.requestId)) {
+        cancelledRequests.delete(request.requestId);
         return {
           requestId: request.requestId,
           source: request.source,
@@ -146,6 +174,7 @@ export function createMockBridge(initial: CloudConfig = DEFAULT_CONFIG): Desktop
     },
     async translateMulti(request) {
       if (cancelledRequests.has(request.requestId)) {
+        cancelledRequests.delete(request.requestId);
         return {
           requestId: request.requestId,
           source: request.source,

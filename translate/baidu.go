@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -198,7 +197,7 @@ func (c *baiduClient) postForm(ctx context.Context, endpoint string, form url.Va
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	data, err := readAPIResponse(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("读取百度翻译响应失败: %w", err)
 	}

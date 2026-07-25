@@ -105,6 +105,18 @@ export interface HistoryEntry {
   time: string;
 }
 
+export interface HistoryQuery {
+  query: string;
+  offset: number;
+  limit: number;
+}
+
+export interface HistoryPage {
+  entries: HistoryEntry[];
+  total: number;
+  hasMore: boolean;
+}
+
 export interface ErrorToast {
   msg: string;
   code: TranslateErrorCode;

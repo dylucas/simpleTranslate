@@ -13,7 +13,9 @@
 //   watcher.setBaseline(text); // 显式更新基线
 
 const DEFAULT_INTERVAL = 1500;
-const DEFAULT_MAX_LEN = 5000;
+import { MAX_INPUT_BYTES, utf8ByteLength } from "./textLimits";
+
+const DEFAULT_MAX_LEN = MAX_INPUT_BYTES;
 
 export interface ClipboardWatcherOptions {
   getText: () => Promise<string>;
@@ -64,7 +66,7 @@ export function createClipboardWatcher(opts: ClipboardWatcherOptions): Clipboard
         text &&
         text !== lastText &&
         text.trim().length > 0 &&
-        text.length <= maxTextLength &&
+        utf8ByteLength(text) <= maxTextLength &&
         !isBusy()
       ) {
         lastText = text;

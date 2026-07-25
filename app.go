@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -28,6 +29,8 @@ type App struct {
 	// activeTranslations tracks cancellable requests by their frontend request ID.
 	activeTranslationsMu sync.Mutex
 	activeTranslations   map[string]*activeTranslation
+	historyMu            sync.Mutex
+	saveFileDialog       func(context.Context, runtime.SaveDialogOptions) (string, error)
 	// translateInvoke is an optional test seam for exercising request cancellation
 	// without making a real cloud request.
 	translateInvoke func(context.Context, string, string, string, string) (string, error)
@@ -51,9 +54,10 @@ func NewApp() *App {
 func NewAppWithDataDir(dataDir string) *App {
 	return &App{
 		dataDir:            dataDir,
-		translateCache:     newLRUCache(128),
-		detectCache:        newLRUCache(128),
+		translateCache:     newLRUCache(64, 512<<10),
+		detectCache:        newLRUCache(64, 16<<10),
 		activeTranslations: make(map[string]*activeTranslation),
+		saveFileDialog:     runtime.SaveFileDialog,
 	}
 }
 
@@ -182,6 +186,18 @@ type HistoryEntry struct {
 	Time   string `json:"time"`
 }
 
+type HistoryQuery struct {
+	Query  string `json:"query"`
+	Offset int    `json:"offset"`
+	Limit  int    `json:"limit"`
+}
+
+type HistoryPage struct {
+	Entries []HistoryEntry `json:"entries"`
+	Total   int            `json:"total"`
+	HasMore bool           `json:"hasMore"`
+}
+
 // TranslateText 给前端调用的统一入口。
 // 不再返回 Go error：所有错误通过 TranslateResult.Error/ErrorCode 字段返回，
 // 前端总能拿到结构化错误用于差异化提示与重试策略。
@@ -193,6 +209,9 @@ func (a *App) TranslateText(req TranslateRequest) TranslateResult {
 	empty := TranslateResult{RequestID: req.RequestID, Source: source, Target: target}
 	if strings.TrimSpace(text) == "" {
 		return translateResultError(empty, newTranslateError(ErrCodeInvalidInput, engine, "输入文本为空", nil))
+	}
+	if len(text) > maxInputBytes {
+		return translateResultError(empty, newTranslateError(ErrCodeInvalidInput, engine, fmt.Sprintf("原文不能超过 %d 个 UTF-8 字节", maxInputBytes), nil))
 	}
 	if !isSupportedEngine(engine) {
 		return translateResultError(empty, newTranslateError(ErrCodeInvalidInput, engine, "不支持的翻译引擎", nil))
@@ -420,9 +439,15 @@ func normalizeEngines(engines []string) []string {
 	return out
 }
 
-// cacheKey 构造缓存键，用 \x1f（单元分隔符）分隔避免拼接歧义
+// cacheKey returns a fixed-size digest so the cache never retains source text
+// through its keys. Length-prefixing keeps field boundaries unambiguous.
 func cacheKey(parts ...string) string {
-	return strings.Join(parts, "\x1f")
+	h := sha256.New()
+	for _, part := range parts {
+		_, _ = fmt.Fprintf(h, "%d:", len(part))
+		_, _ = h.Write([]byte(part))
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 // detectLanguageBestEffort tries each engine in order. When Baidu's dedicated
@@ -502,6 +527,7 @@ func (a *App) detectLanguageBestEffort(ctx context.Context, text, target string,
 // 与 translate 包的 HTTP/SDK 超时保持一致，确保超时后底层调用也会自然退出，
 // 不会因外层 select 提前返回而遗留 goroutine。
 const engineTimeout = 30 * time.Second
+const maxInputBytes = 6000
 
 // TranslateMulti 多引擎并发翻译：同一句话同时走多个引擎，返回并排结果。
 // 单引擎超时 engineTimeout，超时的引擎返回 "翻译超时" 错误而非阻塞整体。
@@ -517,6 +543,11 @@ func (a *App) TranslateMulti(req MultiTranslateRequest) MultiTranslateResult {
 	emptyRes := MultiTranslateResult{RequestID: req.RequestID, Source: source, Target: target, Results: map[string]EngineTranslateResult{}}
 	if strings.TrimSpace(text) == "" {
 		err := newTranslateError(ErrCodeInvalidInput, "", "输入文本为空", nil)
+		emptyRes.Results = engineErrorResults(req.RequestID, engines, err)
+		return emptyRes
+	}
+	if len(text) > maxInputBytes {
+		err := newTranslateError(ErrCodeInvalidInput, "", fmt.Sprintf("原文不能超过 %d 个 UTF-8 字节", maxInputBytes), nil)
 		emptyRes.Results = engineErrorResults(req.RequestID, engines, err)
 		return emptyRes
 	}
@@ -704,8 +735,14 @@ func (a *App) getHistoryPath() string {
 	return filepath.Join(a.dataDir, "history.json")
 }
 
-// LoadHistory 读取本地持久化的历史记录
-func (a *App) LoadHistory() ([]HistoryEntry, error) {
+// loadHistory reads the compatibility JSON format for internal operations.
+func (a *App) loadHistory() ([]HistoryEntry, error) {
+	a.historyMu.Lock()
+	defer a.historyMu.Unlock()
+	return a.loadHistoryUnlocked()
+}
+
+func (a *App) loadHistoryUnlocked() ([]HistoryEntry, error) {
 	path := a.getHistoryPath()
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -727,8 +764,14 @@ func (a *App) LoadHistory() ([]HistoryEntry, error) {
 	return entries, nil
 }
 
-// SaveHistory 将历史记录写入本地文件（上限 200 条，0600 权限）
-func (a *App) SaveHistory(entries []HistoryEntry) error {
+// saveHistory writes the compatibility JSON format for internal operations.
+func (a *App) saveHistory(entries []HistoryEntry) error {
+	a.historyMu.Lock()
+	defer a.historyMu.Unlock()
+	return a.saveHistoryUnlocked(entries)
+}
+
+func (a *App) saveHistoryUnlocked(entries []HistoryEntry) error {
 	if len(entries) > 200 {
 		entries = entries[:200]
 	}
@@ -738,4 +781,107 @@ func (a *App) SaveHistory(entries []HistoryEntry) error {
 		return err
 	}
 	return storage.WriteFileAtomic(path, data, 0600)
+}
+
+// QueryHistory returns one bounded page without retaining history in memory.
+func (a *App) QueryHistory(query HistoryQuery) (HistoryPage, error) {
+	a.historyMu.Lock()
+	defer a.historyMu.Unlock()
+	entries, err := a.loadHistoryUnlocked()
+	if err != nil {
+		return HistoryPage{}, err
+	}
+	needle := strings.ToLower(strings.TrimSpace(query.Query))
+	filtered := entries
+	if needle != "" {
+		filtered = make([]HistoryEntry, 0, len(entries))
+		for _, entry := range entries {
+			if strings.Contains(strings.ToLower(entry.Input), needle) || strings.Contains(strings.ToLower(entry.Output), needle) {
+				filtered = append(filtered, entry)
+			}
+		}
+	}
+	offset := query.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > len(filtered) {
+		offset = len(filtered)
+	}
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
+	}
+	end := offset + limit
+	if end > len(filtered) {
+		end = len(filtered)
+	}
+	pageEntries := append([]HistoryEntry(nil), filtered[offset:end]...)
+	if pageEntries == nil {
+		pageEntries = []HistoryEntry{}
+	}
+	return HistoryPage{Entries: pageEntries, Total: len(filtered), HasMore: end < len(filtered)}, nil
+}
+
+// AppendHistory atomically prepends a non-duplicate entry and keeps 200 items.
+func (a *App) AppendHistory(entry HistoryEntry) (bool, error) {
+	if strings.TrimSpace(entry.Input) == "" || len(entry.Input) > maxInputBytes {
+		return false, fmt.Errorf("历史原文必须为 1-%d 个 UTF-8 字节", maxInputBytes)
+	}
+	a.historyMu.Lock()
+	defer a.historyMu.Unlock()
+	entries, err := a.loadHistoryUnlocked()
+	if err != nil {
+		return false, err
+	}
+	if len(entries) > 0 {
+		latest := entries[0]
+		if latest.Input == entry.Input && latest.Source == entry.Source && latest.Target == entry.Target {
+			return false, nil
+		}
+	}
+	entries = append([]HistoryEntry{entry}, entries...)
+	return true, a.saveHistoryUnlocked(entries)
+}
+
+func (a *App) ClearHistory() error {
+	a.historyMu.Lock()
+	defer a.historyMu.Unlock()
+	return a.saveHistoryUnlocked([]HistoryEntry{})
+}
+
+// ExportHistory writes the complete on-disk history through the native dialog.
+// Cancelling the dialog is a successful no-op and returns false.
+func (a *App) ExportHistory() (bool, error) {
+	a.historyMu.Lock()
+	entries, err := a.loadHistoryUnlocked()
+	if err != nil {
+		a.historyMu.Unlock()
+		return false, err
+	}
+	data, err := json.MarshalIndent(entries, "", "  ")
+	a.historyMu.Unlock()
+	if err != nil {
+		return false, err
+	}
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	path, err := a.saveFileDialog(ctx, runtime.SaveDialogOptions{
+		Title:                "导出历史记录",
+		DefaultFilename:      fmt.Sprintf("simpleTranslate-history-%s.json", time.Now().Format("2006-01-02")),
+		CanCreateDirectories: true,
+		Filters:              []runtime.FileFilter{{DisplayName: "JSON 文件", Pattern: "*.json"}},
+	})
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(path) == "" {
+		return false, nil
+	}
+	return true, storage.WriteFileAtomic(path, data, 0600)
 }

@@ -15,6 +15,34 @@ func TestLRUCache_GetSet(t *testing.T) {
 	}
 }
 
+func TestLRUCache_ByteBudget(t *testing.T) {
+	c := newLRUCache(10, 6)
+	c.set("a", "12")
+	c.set("b", "345")
+	if _, ok := c.get("a"); ok {
+		t.Fatal("oldest entry should be evicted when byte budget is exceeded")
+	}
+	if c.bytes() > 6 {
+		t.Fatalf("cache bytes = %d, want <= 6", c.bytes())
+	}
+}
+
+func TestLRUCache_RejectsOversizedAndTracksUpdates(t *testing.T) {
+	c := newLRUCache(10, 5)
+	c.set("a", "123")
+	if c.bytes() != 4 {
+		t.Fatalf("bytes = %d, want 4", c.bytes())
+	}
+	c.set("a", "1")
+	if c.bytes() != 2 {
+		t.Fatalf("updated bytes = %d, want 2", c.bytes())
+	}
+	c.set("huge", "12")
+	if _, ok := c.get("huge"); ok {
+		t.Fatal("oversized entry must not be cached")
+	}
+}
+
 // TestLRUCache_Eviction 达到容量上限时淘汰最久未使用
 func TestLRUCache_Eviction(t *testing.T) {
 	c := newLRUCache(2)
@@ -87,5 +115,16 @@ func TestCacheKey(t *testing.T) {
 	k2 := cacheKey("ab", "c")
 	if k1 == k2 {
 		t.Errorf("不同分组应生成不同 key: %q == %q", k1, k2)
+	}
+}
+
+func TestCacheKey_IsFixedDigestAndFieldSensitive(t *testing.T) {
+	text := "secret source text"
+	key := cacheKey("tencent", "en", "zh", text)
+	if len(key) != 64 {
+		t.Fatalf("digest length = %d, want 64", len(key))
+	}
+	if key == cacheKey("tencent", "en", "fr", text) || key == cacheKey("tencent", "en", "zh", text+"!") {
+		t.Fatal("changing route or source text must change the digest")
 	}
 }

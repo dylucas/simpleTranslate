@@ -61,4 +61,16 @@ describe("clipboard watcher", () => {
     expect(onText).not.toHaveBeenCalled();
     watcher.stop();
   });
+
+  it("rejects clipboard text above the UTF-8 byte limit", async () => {
+	vi.useFakeTimers();
+	const onText = vi.fn();
+	const getText = vi.fn().mockResolvedValueOnce("").mockResolvedValueOnce("中".repeat(2001));
+	const watcher = createClipboardWatcher({ getText, onText, intervalMs: 100, maxTextLength: 6000 });
+	watcher.start();
+	await Promise.resolve();
+	await vi.advanceTimersByTimeAsync(100);
+	expect(onText).not.toHaveBeenCalled();
+	watcher.stop();
+  });
 });
