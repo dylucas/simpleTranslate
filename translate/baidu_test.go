@@ -268,3 +268,23 @@ func TestBaiduLiveAPIs(t *testing.T) {
 		t.Fatal(fmt.Errorf("field translation probe failed: %w", err))
 	}
 }
+
+// BenchmarkBaiduSign 测量签名计算的分配开销（优化后直接写入哈希，避免拼接 6KB payload）。
+func BenchmarkBaiduSign(b *testing.B) {
+	query := strings.Repeat("中文", 1500) // 6000 字节
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = baiduSign("20251225000000001", query, "abcdef0123456789", "it", "mySecretKey123")
+	}
+}
+
+// BenchmarkBaiduSign_General 通用翻译签名（无 domain）。
+func BenchmarkBaiduSign_General(b *testing.B) {
+	query := "hello world"
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = baiduSign("20251225000000001", query, "abcdef0123456789", "", "mySecretKey123")
+	}
+}

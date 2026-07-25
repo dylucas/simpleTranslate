@@ -579,3 +579,41 @@ func TestConnectionDraftDoesNotPersist(t *testing.T) {
 		t.Fatalf("connection test mutated persisted config: %q", got.Tencent.SecretKey)
 	}
 }
+
+func TestGetMemoryStats(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	// 写入一些缓存数据使统计非零
+	app.translateCache.set("k1", strings.Repeat("v", 100))
+	app.detectCache.set("k2", "zh")
+
+	stats := app.GetMemoryStats()
+	if stats.ThresholdBytes != memoryThresholdBytes {
+		t.Errorf("threshold = %d, want %d", stats.ThresholdBytes, memoryThresholdBytes)
+	}
+	if stats.TranslateCache.Items != 1 || stats.TranslateCache.Bytes <= 0 {
+		t.Errorf("translateCache = %+v, want 1 item with bytes>0", stats.TranslateCache)
+	}
+	if stats.DetectCache.Items != 1 || stats.DetectCache.Bytes <= 0 {
+		t.Errorf("detectCache = %+v, want 1 item with bytes>0", stats.DetectCache)
+	}
+	if stats.AllocBytes <= 0 || stats.SysBytes <= 0 {
+		t.Errorf("runtime stats = alloc=%d sys=%d, both should be >0", stats.AllocBytes, stats.SysBytes)
+	}
+	if stats.ExceedsThreshold {
+		t.Error("fresh app should not exceed memory threshold")
+	}
+}
+
+func TestRunGC(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	// 分配一些垃圾
+	for i := 0; i < 1000; i++ {
+		_ = strings.Repeat("x", 1024)
+	}
+	before := app.GetMemoryStats()
+	app.RunGC()
+	after := app.GetMemoryStats()
+	if after.NumGC <= before.NumGC {
+		t.Errorf("NumGC did not increase: before=%d after=%d", before.NumGC, after.NumGC)
+	}
+}

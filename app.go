@@ -3,13 +3,17 @@ package main
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"simpleTranslate/internal/storage"
 	"simpleTranslate/translate"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -417,7 +421,6 @@ func fallbackTarget(src, target string) string {
 }
 
 func normalizeEngines(engines []string) []string {
-	seen := map[string]bool{}
 	out := make([]string, 0, len(engines))
 	for _, e := range engines {
 		e = strings.ToLower(strings.TrimSpace(e))
@@ -427,10 +430,17 @@ func normalizeEngines(engines []string) []string {
 		if e != "tencent" && e != "aliyun" && e != "baidu" {
 			continue
 		}
-		if seen[e] {
+		// 引擎最多 3 个，线性扫描比 map 更省内存
+		dup := false
+		for _, existing := range out {
+			if existing == e {
+				dup = true
+				break
+			}
+		}
+		if dup {
 			continue
 		}
-		seen[e] = true
 		out = append(out, e)
 	}
 	if len(out) == 0 {
@@ -439,16 +449,31 @@ func normalizeEngines(engines []string) []string {
 	return out
 }
 
+// sha256Pool 复用 sha256 哈希对象，避免每次缓存键计算都分配新对象。
+var sha256Pool = sync.Pool{
+	New: func() interface{} { return sha256.New() },
+}
+
 // cacheKey returns a fixed-size digest so the cache never retains source text
 // through its keys. Length-prefixing keeps field boundaries unambiguous.
+// 使用对象池 + 直接字节写入，避免 fmt.Fprintf 与 h.Sum(nil) 的分配。
 func cacheKey(parts ...string) string {
-	h := sha256.New()
+	h := sha256Pool.Get().(hash.Hash)
+	h.Reset()
+	defer sha256Pool.Put(h)
+	var lenBuf [20]byte
 	for _, part := range parts {
-		_, _ = fmt.Fprintf(h, "%d:", len(part))
+		n := strconv.AppendInt(lenBuf[:0], int64(len(part)), 10)
+		h.Write(n)
+		h.Write(colonBytes)
 		_, _ = h.Write([]byte(part))
 	}
-	return fmt.Sprintf("%x", h.Sum(nil))
+	var sum [sha256.Size]byte
+	h.Sum(sum[:0])
+	return hex.EncodeToString(sum[:])
 }
+
+var colonBytes = []byte{':'}
 
 // detectLanguageBestEffort tries each engine in order. When Baidu's dedicated
 // detector cannot resolve one of the application's languages, general
@@ -784,6 +809,7 @@ func (a *App) saveHistoryUnlocked(entries []HistoryEntry) error {
 }
 
 // QueryHistory returns one bounded page without retaining history in memory.
+// 单次遍历完成过滤 + 分页，避免先全量拷贝匹配项再切片。
 func (a *App) QueryHistory(query HistoryQuery) (HistoryPage, error) {
 	a.historyMu.Lock()
 	defer a.historyMu.Unlock()
@@ -792,21 +818,9 @@ func (a *App) QueryHistory(query HistoryQuery) (HistoryPage, error) {
 		return HistoryPage{}, err
 	}
 	needle := strings.ToLower(strings.TrimSpace(query.Query))
-	filtered := entries
-	if needle != "" {
-		filtered = make([]HistoryEntry, 0, len(entries))
-		for _, entry := range entries {
-			if strings.Contains(strings.ToLower(entry.Input), needle) || strings.Contains(strings.ToLower(entry.Output), needle) {
-				filtered = append(filtered, entry)
-			}
-		}
-	}
 	offset := query.Offset
 	if offset < 0 {
 		offset = 0
-	}
-	if offset > len(filtered) {
-		offset = len(filtered)
 	}
 	limit := query.Limit
 	if limit <= 0 {
@@ -815,15 +829,21 @@ func (a *App) QueryHistory(query HistoryQuery) (HistoryPage, error) {
 	if limit > 50 {
 		limit = 50
 	}
-	end := offset + limit
-	if end > len(filtered) {
-		end = len(filtered)
+
+	pageEntries := make([]HistoryEntry, 0, limit)
+	matched := 0
+	for _, entry := range entries {
+		if needle != "" {
+			if !strings.Contains(strings.ToLower(entry.Input), needle) && !strings.Contains(strings.ToLower(entry.Output), needle) {
+				continue
+			}
+		}
+		if matched >= offset && matched < offset+limit {
+			pageEntries = append(pageEntries, entry)
+		}
+		matched++
 	}
-	pageEntries := append([]HistoryEntry(nil), filtered[offset:end]...)
-	if pageEntries == nil {
-		pageEntries = []HistoryEntry{}
-	}
-	return HistoryPage{Entries: pageEntries, Total: len(filtered), HasMore: end < len(filtered)}, nil
+	return HistoryPage{Entries: pageEntries, Total: matched, HasMore: matched > offset+limit}, nil
 }
 
 // AppendHistory atomically prepends a non-duplicate entry and keeps 200 items.
@@ -884,4 +904,55 @@ func (a *App) ExportHistory() (bool, error) {
 		return false, nil
 	}
 	return true, storage.WriteFileAtomic(path, data, 0600)
+}
+
+// CacheStats 缓存运行时统计，供内存监控端点返回。
+type CacheStats struct {
+	Items int `json:"items"`
+	Bytes int `json:"bytes"`
+}
+
+// MemoryStats 内存使用快照，供前端监控与阈值告警使用。
+type MemoryStats struct {
+	AllocBytes         int64      `json:"allocBytes"`         // Go 堆已分配字节数
+	SysBytes           int64      `json:"sysBytes"`           // 从 OS 获取的总内存
+	HeapObjects        uint64     `json:"heapObjects"`        // 堆对象数量
+	NumGC              uint32     `json:"numGC"`              // GC 次数
+	TranslateCache     CacheStats `json:"translateCache"`
+	DetectCache        CacheStats `json:"detectCache"`
+	ActiveTranslations int        `json:"activeTranslations"` // 进行中的翻译请求数
+	ThresholdBytes     int64      `json:"thresholdBytes"`     // 告警阈值
+	ExceedsThreshold   bool       `json:"exceedsThreshold"`   // 是否超阈值
+}
+
+// 内存告警阈值：200MB。桌面翻译应用正常运行时远低于此值，
+// 超过则提示用户重启或清理历史。可在设置面板中展示告警状态。
+const memoryThresholdBytes = 200 << 20
+
+// GetMemoryStats 返回当前内存使用快照，供前端监控面板周期性查询。
+// 注意：runtime.ReadMemStats 会触发短暂 STW，建议调用间隔不低于 5s。
+func (a *App) GetMemoryStats() MemoryStats {
+	var m goruntime.MemStats
+	goruntime.ReadMemStats(&m)
+	active := 0
+	a.activeTranslationsMu.Lock()
+	active = len(a.activeTranslations)
+	a.activeTranslationsMu.Unlock()
+	return MemoryStats{
+		AllocBytes:         int64(m.Alloc),
+		SysBytes:           int64(m.Sys),
+		HeapObjects:        m.HeapObjects,
+		NumGC:              m.NumGC,
+		TranslateCache:     CacheStats{Items: a.translateCache.len(), Bytes: a.translateCache.bytes()},
+		DetectCache:        CacheStats{Items: a.detectCache.len(), Bytes: a.detectCache.bytes()},
+		ActiveTranslations: active,
+		ThresholdBytes:     memoryThresholdBytes,
+		ExceedsThreshold:   int64(m.Alloc) > memoryThresholdBytes,
+	}
+}
+
+// RunGC 主动触发垃圾回收，用于用户在设置中手动清理内存。
+// 清空历史后调用可立即释放历史记录占用的堆内存。
+func (a *App) RunGC() {
+	goruntime.GC()
 }

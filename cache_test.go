@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestLRUCache_GetSet 基本读写命中
 func TestLRUCache_GetSet(t *testing.T) {
@@ -127,4 +130,42 @@ func TestCacheKey_IsFixedDigestAndFieldSensitive(t *testing.T) {
 	if key == cacheKey("tencent", "en", "fr", text) || key == cacheKey("tencent", "en", "zh", text+"!") {
 		t.Fatal("changing route or source text must change the digest")
 	}
+}
+
+// BenchmarkCacheKey 测量缓存键计算的分配开销（优化后使用 sync.Pool + strconv）。
+func BenchmarkCacheKey(b *testing.B) {
+	text := strings.Repeat("x", 6000) // 模拟最大输入
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_ = cacheKey("baidu", "general", "zh", "en", text)
+	}
+}
+
+// BenchmarkLRUCache_GetSet 模拟翻译结果缓存的读写压力。
+func BenchmarkLRUCache_GetSet(b *testing.B) {
+	c := newLRUCache(64, 512<<10)
+	text := strings.Repeat("x", 500)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		key := cacheKey("tencent", "en", "zh", text)
+		c.set(key, text)
+		c.get(key)
+	}
+}
+
+// BenchmarkLRUCache_ConcurrentStress 并发压力测试：验证缓存在线程安全下的稳定性。
+func BenchmarkLRUCache_ConcurrentStress(b *testing.B) {
+	c := newLRUCache(64, 512<<10)
+	text := strings.Repeat("x", 500)
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		for pb.Next() {
+			key := cacheKey("tencent", "en", "zh", text)
+			c.set(key, text)
+			c.get(key)
+		}
+	})
 }

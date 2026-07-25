@@ -2,7 +2,6 @@ package translate
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -220,11 +219,7 @@ func getDetectLanguageWithContext(ctx context.Context, text string, client *open
 	}
 
 	var result GetDetectLanguageResponse
-	bytes, err := json.Marshal(resp)
-	if err != nil {
-		return "", err
-	}
-	if err := json.Unmarshal(bytes, &result); err != nil {
+	if err := decodeThroughBuffer(resp, &result); err != nil {
 		return "", err
 	}
 
@@ -285,11 +280,7 @@ func translateGeneralWithContext(ctx context.Context, text string, source string
 	}
 
 	var result APIResponse
-	bytes, err := json.Marshal(resp)
-	if err != nil {
-		return "", err
-	}
-	if err := json.Unmarshal(bytes, &result); err != nil {
+	if err := decodeThroughBuffer(resp, &result); err != nil {
 		return "", err
 	}
 

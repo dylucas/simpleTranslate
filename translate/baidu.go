@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
@@ -121,12 +122,17 @@ func newBaiduSalt() (string, error) {
 }
 
 func baiduSign(appID, query, salt, domain, secretKey string) string {
-	payload := appID + query + salt
+	// 直接写入哈希，避免拼接可达 6KB+ 的 payload 字符串
+	h := md5.New()
+	io.WriteString(h, appID)
+	io.WriteString(h, query)
+	io.WriteString(h, salt)
 	if domain != "" {
-		payload += domain
+		io.WriteString(h, domain)
 	}
-	payload += secretKey
-	sum := md5.Sum([]byte(payload))
+	io.WriteString(h, secretKey)
+	var sum [md5.Size]byte
+	h.Sum(sum[:0])
 	return hex.EncodeToString(sum[:])
 }
 
