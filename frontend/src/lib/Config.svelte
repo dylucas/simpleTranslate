@@ -1,6 +1,6 @@
 <script lang="ts">
   import {
-    CheckCircle2, Cloud, Cpu, Eye, EyeOff, Globe, KeyRound,
+    CheckCircle2, ChevronDown, Cloud, Cpu, Eye, EyeOff, Globe, KeyRound,
     RefreshCcw, Save, Settings, X, XCircle,
   } from "@lucide/svelte";
   import { tick } from "svelte";
@@ -137,9 +137,9 @@
       <section class="settings-section">
         <h3><Cpu size={15} />核心偏好</h3>
         <label class="setting-row"><span><strong>默认翻译引擎</strong><small>单引擎模式和对照首选结果</small></span>
-          <select value={draft.defaultEngine} onchange={(event) => (draft.defaultEngine = event.currentTarget.value as EngineId)} aria-label="默认翻译引擎">
+          <span class="select-wrap"><select value={draft.defaultEngine} onchange={(event) => (draft.defaultEngine = event.currentTarget.value as EngineId)} aria-label="默认翻译引擎">
             <option value="tencent">腾讯混元</option><option value="aliyun">阿里云 MT</option><option value="baidu">百度翻译</option>
-          </select>
+          </select><ChevronDown size={15} /></span>
         </label>
       </section>
 
@@ -176,9 +176,9 @@
         <div class="fields two-columns">
           <label><span>APP ID</span><div class="input-wrap"><KeyRound size={15} /><input type={showBaiduId ? "text" : "password"} value={draft.baidu.appId} oninput={(event) => updateBaidu("appId", event.currentTarget.value)} /><button type="button" onclick={() => (showBaiduId = !showBaiduId)} aria-label="显示或隐藏百度 APP ID">{#if showBaiduId}<EyeOff size={15} />{:else}<Eye size={15} />{/if}</button></div></label>
           <label><span>密钥</span><div class="input-wrap"><KeyRound size={15} /><input type={showBaiduKey ? "text" : "password"} value={draft.baidu.secretKey} oninput={(event) => updateBaidu("secretKey", event.currentTarget.value)} /><button type="button" onclick={() => (showBaiduKey = !showBaiduKey)} aria-label="显示或隐藏百度密钥">{#if showBaiduKey}<EyeOff size={15} />{:else}<Eye size={15} />{/if}</button></div></label>
-          <label class="endpoint"><span>翻译领域</span><select value={draft.baidu.domain} onchange={(event) => updateBaidu("domain", event.currentTarget.value as BaiduDomain)} aria-label="百度翻译领域">
+          <label><span>翻译领域</span><span class="select-wrap"><select value={draft.baidu.domain} onchange={(event) => updateBaidu("domain", event.currentTarget.value as BaiduDomain)} aria-label="百度翻译领域">
             {#each BAIDU_DOMAIN_OPTIONS as option}<option value={option.value}>{option.label}</option>{/each}
-          </select></label>
+          </select><ChevronDown size={15} /></span></label>
         </div>
         <div class="test-row">
           <button class="test-btn" onclick={() => void test("baidu")} disabled={connection.baidu?.testing || !draft.baidu.appId.trim() || !draft.baidu.secretKey.trim()} aria-label="测试百度翻译连接">
@@ -218,11 +218,16 @@
   .setting-row { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-4); padding: 0; }
   .setting-row > span { display: grid; gap: var(--sp-1); }
   .setting-row strong { color: var(--text-main); font-size: var(--fs-base); }
-  select { min-height: 34px; border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0 var(--sp-3); background: var(--bg-input); color: var(--text-main); }
+  .select-wrap { position: relative; display: inline-grid; width: 160px; color: var(--text-muted); }
+  .select-wrap select { width: 100%; min-height: 36px; appearance: none; border: 1px solid var(--border); border-radius: var(--radius-md); outline: 0; padding: 0 36px 0 var(--sp-3); background: var(--bg-input); color: var(--text-main); cursor: pointer; }
+  .select-wrap > :global(svg) { position: absolute; top: 50%; right: var(--sp-3); pointer-events: none; transform: translateY(-50%); }
+  .select-wrap:hover select { border-color: var(--border-strong); background: var(--bg-surface); }
+  .select-wrap:focus-within select { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-soft); }
   .fields { display: grid; gap: var(--sp-3); }
   .two-columns { grid-template-columns: 1fr 1fr; }
   .endpoint { grid-column: 1 / -1; }
   .fields label { display: grid; gap: var(--sp-2); color: var(--text-sec); font-size: var(--fs-sm); }
+  .fields .select-wrap { width: 100%; }
   .input-wrap { display: flex; min-height: 36px; align-items: center; gap: var(--sp-2); border: 1px solid var(--border); border-radius: var(--radius-md); padding-left: var(--sp-3); background: var(--bg-input); color: var(--text-muted); }
   .input-wrap:focus-within { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-soft); }
   .input-wrap input { min-width: 0; flex: 1; border: 0; outline: 0; background: transparent; color: var(--text-main); }

@@ -101,7 +101,7 @@
     background: var(--bg-panel);
   }
   .route-control, .engine-switch, .mode-toggles { display: flex; align-items: center; }
-  .route-control { min-width: 292px; gap: 2px; }
+  .route-control { min-width: 326px; gap: 2px; }
   .language-select {
     display: grid;
     min-width: 112px;
@@ -115,6 +115,7 @@
     padding: 0 var(--sp-2);
     background: var(--bg-input);
   }
+  .language-select:first-child { min-width: 148px; flex-grow: 1.25; }
   .language-select:hover { border-color: var(--border-strong); }
   .language-select:focus-within { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-soft); }
   .language-select span { color: var(--text-muted); font-size: var(--fs-xs); }
