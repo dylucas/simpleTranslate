@@ -1,7 +1,7 @@
 package translate
 
 import (
-	"encoding/json"
+	"context"
 	"fmt"
 	"net/url"
 	"strconv"
@@ -90,6 +90,19 @@ func aliyunEndpoint(regionOrEndpoint string) string {
 	return "mt." + value + ".aliyuncs.com"
 }
 
+// aliyunLanguageCode converts the application's legacy language codes to the
+// ISO codes expected by the Aliyun translation API.
+func aliyunLanguageCode(code string) string {
+	switch strings.ToLower(strings.TrimSpace(code)) {
+	case "jp":
+		return "ja"
+	case "kr":
+		return "ko"
+	default:
+		return strings.ToLower(strings.TrimSpace(code))
+	}
+}
+
 // CreateApiInfo 构造阿里云 RPC 接口请求参数
 func CreateApiInfo(apiName string) *openapi.Params {
 	return &openapi.Params{
@@ -169,14 +182,22 @@ func GetDetectLanguage(text string) (string, error) {
 }
 
 func GetDetectLanguageWithConfig(text string, service config.ServiceConfig) (string, error) {
+	return GetDetectLanguageWithContext(context.Background(), text, service)
+}
+
+func getDetectLanguage(text string, client *openapi.Client) (string, error) {
+	return getDetectLanguageWithContext(context.Background(), text, client)
+}
+
+func GetDetectLanguageWithContext(ctx context.Context, text string, service config.ServiceConfig) (string, error) {
 	client, err := CreateClientWithConfig(service)
 	if err != nil {
 		return "", err
 	}
-	return getDetectLanguage(text, client)
+	return getDetectLanguageWithContext(ctx, text, client)
 }
 
-func getDetectLanguage(text string, client *openapi.Client) (string, error) {
+func getDetectLanguageWithContext(ctx context.Context, text string, client *openapi.Client) (string, error) {
 	text = strings.TrimSpace(text)
 	text = strings.ReplaceAll(text, "\n", " ")
 
@@ -192,17 +213,13 @@ func getDetectLanguage(text string, client *openapi.Client) (string, error) {
 		Body: body,
 	}
 
-	resp, err := client.CallApi(params, request, runtime)
+	resp, err := client.CallApiWithCtx(ctx, params, request, runtime)
 	if err != nil {
 		return "", err
 	}
 
 	var result GetDetectLanguageResponse
-	bytes, err := json.Marshal(resp)
-	if err != nil {
-		return "", err
-	}
-	if err := json.Unmarshal(bytes, &result); err != nil {
+	if err := decodeThroughBuffer(resp, &result); err != nil {
 		return "", err
 	}
 
@@ -210,7 +227,7 @@ func getDetectLanguage(text string, client *openapi.Client) (string, error) {
 		return "", fmt.Errorf("阿里云语言识别失败: HTTP %d", result.StatusCode)
 	}
 
-	return result.Body.DetectedLanguage, nil
+	return validateDetectedLanguage(result.Body.DetectedLanguage)
 }
 
 // TranslateGeneral 调用阿里云通用翻译接口
@@ -224,20 +241,28 @@ func TranslateGeneral(text string, source string, target string) (string, error)
 }
 
 func TranslateGeneralWithConfig(text string, source string, target string, service config.ServiceConfig) (string, error) {
+	return TranslateGeneralWithContext(context.Background(), text, source, target, service)
+}
+
+func translateGeneral(text string, source string, target string, client *openapi.Client) (string, error) {
+	return translateGeneralWithContext(context.Background(), text, source, target, client)
+}
+
+func TranslateGeneralWithContext(ctx context.Context, text string, source string, target string, service config.ServiceConfig) (string, error) {
 	client, err := CreateClientWithConfig(service)
 	if err != nil {
 		return "", err
 	}
-	return translateGeneral(text, source, target, client)
+	return translateGeneralWithContext(ctx, text, source, target, client)
 }
 
-func translateGeneral(text string, source string, target string, client *openapi.Client) (string, error) {
+func translateGeneralWithContext(ctx context.Context, text string, source string, target string, client *openapi.Client) (string, error) {
 
 	params := CreateApiInfo("TranslateGeneral")
 	body := map[string]interface{}{}
 	body["FormatType"] = tea.String("text")
-	body["SourceLanguage"] = tea.String(source)
-	body["TargetLanguage"] = tea.String(target)
+	body["SourceLanguage"] = tea.String(aliyunLanguageCode(source))
+	body["TargetLanguage"] = tea.String(aliyunLanguageCode(target))
 	body["SourceText"] = tea.String(text)
 	body["Scene"] = tea.String("general")
 	// 显式设置读写超时，与外层 30s 超时保持一致，避免 SDK 调用 Hang 导致 goroutine 泄漏
@@ -249,17 +274,13 @@ func translateGeneral(text string, source string, target string, client *openapi
 		Body: body,
 	}
 
-	resp, err := client.CallApi(params, request, runtime)
+	resp, err := client.CallApiWithCtx(ctx, params, request, runtime)
 	if err != nil {
 		return "", err
 	}
 
 	var result APIResponse
-	bytes, err := json.Marshal(resp)
-	if err != nil {
-		return "", err
-	}
-	if err := json.Unmarshal(bytes, &result); err != nil {
+	if err := decodeThroughBuffer(resp, &result); err != nil {
 		return "", err
 	}
 
@@ -279,6 +300,9 @@ func validateTranslateResponse(result APIResponse) error {
 			return fmt.Errorf("阿里云翻译失败: Code %d: %s", result.Body.Code, result.Body.Message)
 		}
 		return fmt.Errorf("阿里云翻译失败: Code %d", result.Body.Code)
+	}
+	if strings.TrimSpace(result.Body.Data.Translated) == "" {
+		return fmt.Errorf("阿里云翻译返回空译文")
 	}
 	return nil
 }

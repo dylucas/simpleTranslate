@@ -1,6 +1,42 @@
 package translate
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"net/http"
+	"strings"
+	"testing"
+)
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func TestChatCompletionContextCancellation(t *testing.T) {
+	previousClient := httpClient
+	defer func() { httpClient = previousClient }()
+
+	started := make(chan struct{})
+	httpClient = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		close(started)
+		<-req.Context().Done()
+		return nil, req.Context().Err()
+	})}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := chatCompletionWithAPIKeyContext(ctx, "hello", "test-key")
+		errCh <- err
+	}()
+	<-started
+	cancel()
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("chatCompletion cancellation error = %v, want context.Canceled", err)
+	}
+}
 
 // TestNormalizeLangCode 验证模型返回的各种语种代码/名称归一化
 func TestNormalizeLangCode(t *testing.T) {
@@ -81,5 +117,68 @@ func TestDetectLanguage_Whitespace(t *testing.T) {
 	_, err := DetectLanguage("   \n\t  ")
 	if err == nil {
 		t.Error("纯空白文本应返回错误，得到 nil")
+	}
+}
+
+func TestDetectLanguageRejectsUnsupportedResponse(t *testing.T) {
+	_, err := detectLanguage("hello", func(string) (string, error) {
+		return "xx", nil
+	})
+	if err == nil {
+		t.Fatal("不支持的识别结果应返回错误")
+	}
+}
+
+func TestDetectLanguageIgnoresURLs(t *testing.T) {
+	const (
+		text = "To develop in the browser and call your bound Go methods from Javascript, navigate to: http://localhost:34115"
+		url  = "http://localhost:34115"
+	)
+
+	var prompt string
+	got, err := detectLanguage(text, func(value string) (string, error) {
+		prompt = value
+		return "en", nil
+	})
+	if err != nil {
+		t.Fatalf("detectLanguage returned error: %v", err)
+	}
+	if got != "en" {
+		t.Fatalf("detectLanguage returned %q, want en", got)
+	}
+	if strings.Contains(prompt, url) {
+		t.Fatalf("language detection prompt should omit URL %q: %s", url, prompt)
+	}
+	if !strings.Contains(prompt, "To develop in the browser") {
+		t.Fatalf("language detection prompt lost natural-language text: %s", prompt)
+	}
+}
+
+func TestDetectLanguageKeepsURLOnlyInputValid(t *testing.T) {
+	const url = "https://localhost:34115"
+	var prompt string
+	if _, err := detectLanguage(url, func(value string) (string, error) {
+		prompt = value
+		return "en", nil
+	}); err != nil {
+		t.Fatalf("URL-only input should still reach the detector: %v", err)
+	}
+	if !strings.Contains(prompt, url) {
+		t.Fatalf("URL-only input should not produce an empty detector prompt: %s", prompt)
+	}
+}
+
+func TestValidateDetectedLanguageRejectsEmptyResponse(t *testing.T) {
+	if _, err := validateDetectedLanguage(""); err == nil {
+		t.Fatal("空识别结果应返回错误")
+	}
+}
+
+func TestTranslateTextRejectsEmptyResponse(t *testing.T) {
+	_, err := translateText("hello", "en", "zh", func(string) (string, error) {
+		return "   ", nil
+	})
+	if err == nil {
+		t.Fatal("空译文应返回错误")
 	}
 }

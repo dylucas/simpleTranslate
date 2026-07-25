@@ -11,6 +11,9 @@ type CloudConfig = config.CloudConfig
 // ServiceConfig 复用 config 包的定义。
 type ServiceConfig = config.ServiceConfig
 
+// BaiduConfig is exposed to Wails for the dedicated Baidu settings form.
+type BaiduConfig = config.BaiduConfig
+
 // getConfigPath 返回配置文件路径（App 方法包装）。
 func (a *App) getConfigPath() string {
 	return filepath.Join(a.dataDir, "config.json")

@@ -1,13 +1,16 @@
 <script lang="ts">
-  import { ArrowLeftRight, Clipboard, Columns2, LoaderCircle, Send, Zap } from "@lucide/svelte";
+  import { ArrowLeftRight, Clipboard, Columns2, Send, Square, Zap } from "@lucide/svelte";
+  import { BAIDU_DOMAIN_OPTIONS } from "./baiduDomains";
   import { langs } from "./languages";
   import { ARIA_SHORTCUTS } from "./shortcuts";
-  import type { EngineId } from "./types";
+  import type { BaiduDomain, EngineId } from "./types";
 
   interface Props {
     source: string;
     target: string;
     activeEngine: EngineId;
+    baiduDomain: BaiduDomain;
+    showBaiduDomain: boolean;
     autoTranslate: boolean;
     autoDetectLang: string;
     detectedSource: string;
@@ -19,17 +22,19 @@
     onSource: (value: string) => void;
     onTarget: (value: string) => void;
     onEngine: (engine: EngineId) => void;
+    onBaiduDomain: (domain: BaiduDomain) => void;
     onSwap: () => void;
     onAuto: (value: boolean) => void;
     onClipboard: () => void;
     onCompare: () => void;
     onTranslate: () => void;
+    onCancel: () => void;
   }
 
   let {
-    source, target, activeEngine, autoTranslate, autoDetectLang, detectedSource,
+    source, target, activeEngine, baiduDomain, showBaiduDomain, autoTranslate, autoDetectLang, detectedSource,
     clipboardWatch, compareMode, isProcessing, canTranslate, unavailableReason,
-    onSource, onTarget, onEngine, onSwap, onAuto, onClipboard, onCompare, onTranslate,
+    onSource, onTarget, onEngine, onBaiduDomain, onSwap, onAuto, onClipboard, onCompare, onTranslate, onCancel,
   }: Props = $props();
 
   let canSwap = $derived(source !== "auto" || Boolean(detectedSource));
@@ -59,7 +64,17 @@
     <div class="engine-switch" role="group" aria-label="默认翻译引擎">
       <button class:active={activeEngine === "tencent"} aria-pressed={activeEngine === "tencent"} onclick={() => onEngine("tencent")}>混元</button>
       <button class:active={activeEngine === "aliyun"} aria-pressed={activeEngine === "aliyun"} onclick={() => onEngine("aliyun")}>阿里云</button>
+      <button class:active={activeEngine === "baidu"} aria-pressed={activeEngine === "baidu"} onclick={() => onEngine("baidu")}>百度</button>
     </div>
+
+    {#if showBaiduDomain}
+      <label class="domain-select">
+        <span>领域</span>
+        <select value={baiduDomain} onchange={(event) => onBaiduDomain(event.currentTarget.value as BaiduDomain)} aria-label="翻译领域">
+          {#each BAIDU_DOMAIN_OPTIONS as option}<option value={option.value}>{option.label}</option>{/each}
+        </select>
+      </label>
+    {/if}
 
     <div class="mode-toggles" role="group" aria-label="翻译模式">
       <button class:active={autoTranslate} aria-pressed={autoTranslate} aria-label="自动翻译" onclick={() => onAuto(!autoTranslate)} title="自动翻译"><Zap size={14} /><span>自动</span></button>
@@ -67,8 +82,8 @@
       <button class:active={compareMode} aria-pressed={compareMode} aria-label="多引擎对照" onclick={onCompare} title="多引擎对照"><Columns2 size={14} /><span>对照</span></button>
     </div>
 
-    <button class="translate" onclick={onTranslate} disabled={!canTranslate || isProcessing} aria-busy={isProcessing} aria-label="翻译" aria-keyshortcuts={ARIA_SHORTCUTS.translate} title={unavailableReason || "翻译"}>
-      {#if isProcessing}<LoaderCircle size={15} class="spin" />{:else}<Send size={15} />{/if}<span>{isProcessing ? "翻译中" : "翻译"}</span>
+    <button class="translate" onclick={isProcessing ? onCancel : onTranslate} disabled={isProcessing ? false : !canTranslate} aria-busy={isProcessing} aria-label={isProcessing ? "取消翻译" : "翻译"} aria-keyshortcuts={isProcessing ? `${ARIA_SHORTCUTS.cancelTranslation} ${ARIA_SHORTCUTS.translate}` : ARIA_SHORTCUTS.translate} title={isProcessing ? "取消翻译" : unavailableReason || "翻译"}>
+      {#if isProcessing}<Square size={14} />{:else}<Send size={15} />{/if}<span>{isProcessing ? "取消" : "翻译"}</span>
     </button>
   </div>
 </header>
@@ -86,7 +101,7 @@
     background: var(--bg-panel);
   }
   .route-control, .engine-switch, .mode-toggles { display: flex; align-items: center; }
-  .route-control { min-width: 292px; gap: 2px; }
+  .route-control { min-width: 326px; gap: 2px; }
   .language-select {
     display: grid;
     min-width: 112px;
@@ -100,6 +115,7 @@
     padding: 0 var(--sp-2);
     background: var(--bg-input);
   }
+  .language-select:first-child { min-width: 148px; flex-grow: 1.25; }
   .language-select:hover { border-color: var(--border-strong); }
   .language-select:focus-within { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-soft); }
   .language-select span { color: var(--text-muted); font-size: var(--fs-xs); }
@@ -110,6 +126,10 @@
   .swap:hover:not(:disabled) { background: var(--bg-hover); color: var(--primary); }
   .swap:disabled { cursor: not-allowed; opacity: .32; }
   .command-actions { display: flex; min-width: 0; align-items: center; justify-content: flex-end; gap: var(--sp-2); }
+  .domain-select { display: grid; min-width: 112px; height: 34px; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: var(--sp-2); border: 1px solid var(--border); border-radius: var(--radius-md); padding: 0 var(--sp-2); background: var(--bg-input); }
+  .domain-select:hover { border-color: var(--border-strong); }
+  .domain-select:focus-within { border-color: var(--primary); box-shadow: 0 0 0 2px var(--primary-soft); }
+  .domain-select span { color: var(--text-muted); font-size: var(--fs-xs); }
   .engine-switch, .mode-toggles { gap: 2px; border: 1px solid var(--border); border-radius: var(--radius-md); padding: 2px; background: var(--bg-input); }
   .engine-switch button { min-width: 54px; height: 28px; border-radius: var(--radius-sm); padding: 0 var(--sp-2); background: transparent; color: var(--text-sec); font-size: var(--fs-xs); }
   .engine-switch button.active { background: var(--bg-elevated); color: var(--primary); box-shadow: var(--shadow-sm); font-weight: var(--fw-semibold); }
@@ -131,13 +151,15 @@
     .command-bar { min-height: 88px; align-items: stretch; flex-direction: column; gap: 6px; padding: 6px var(--sp-2); }
     .route-control { width: 100%; min-width: 0; }
     .language-select { min-width: 0; }
-    .command-actions { width: 100%; justify-content: space-between; }
+    .command-actions { width: 100%; flex-wrap: wrap; justify-content: space-between; }
     .translate { flex: 1; max-width: 88px; }
   }
   @media (max-width: 460px) {
     .language-select { grid-template-columns: 1fr; gap: 0; }
     .language-select span { display: none; }
     .engine-switch button { min-width: 42px; padding-inline: 5px; }
+    .domain-select { min-width: 82px; grid-template-columns: 1fr; gap: 0; }
+    .domain-select span { display: none; }
     .translate { width: 34px; min-width: 34px; max-width: 34px; padding: 0; }
     .translate span { display: none; }
   }

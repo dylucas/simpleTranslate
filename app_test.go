@@ -1,13 +1,100 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"simpleTranslate/config"
 )
+
+func TestCancelTranslationCancelsRegisteredRequest(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	ctx, finish := app.beginTranslation("cancel-me")
+	done := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		close(done)
+	}()
+
+	if !app.CancelTranslation("cancel-me") {
+		t.Fatal("CancelTranslation should find the active request")
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("request context was not cancelled")
+	}
+	finish()
+	if app.CancelTranslation("cancel-me") {
+		t.Fatal("a finished request should no longer be cancellable")
+	}
+}
+
+func TestTranslateTextCancellationSkipsCache(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	started := make(chan struct{})
+	app.translateInvoke = func(ctx context.Context, _, _, _, _ string) (string, error) {
+		close(started)
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	resultCh := make(chan TranslateResult, 1)
+	go func() {
+		resultCh <- app.TranslateText(TranslateRequest{RequestID: "cancel-text", Text: "hello", Source: "en", Target: "zh", Engine: "tencent"})
+	}()
+	<-started
+	if !app.CancelTranslation("cancel-text") {
+		t.Fatal("expected active translation to be cancellable")
+	}
+	result := <-resultCh
+	if result.ErrorCode != ErrCodeCancelled {
+		t.Fatalf("ErrorCode = %q, want %q", result.ErrorCode, ErrCodeCancelled)
+	}
+	if app.translateCache.len() != 0 {
+		t.Fatalf("cancelled translation should not populate cache, got %d entries", app.translateCache.len())
+	}
+}
+
+func TestTranslateMultiCancellationSkipsEventsAndCache(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	started := make(chan struct{})
+	app.translateInvoke = func(ctx context.Context, _, _, _, _ string) (string, error) {
+		close(started)
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	emitted := 0
+	app.eventEmit = func(EngineTranslateResult) { emitted++ }
+	resultCh := make(chan MultiTranslateResult, 1)
+	go func() {
+		resultCh <- app.TranslateMulti(MultiTranslateRequest{RequestID: "cancel-multi", Text: "hello", Source: "en", Target: "zh", Engines: []string{"tencent"}})
+	}()
+	<-started
+	if !app.CancelTranslation("cancel-multi") {
+		t.Fatal("expected active multi translation to be cancellable")
+	}
+	result := <-resultCh
+	engineResult := result.Results["tencent"]
+	if engineResult.ErrorCode != ErrCodeCancelled {
+		t.Fatalf("engine ErrorCode = %q, want %q", engineResult.ErrorCode, ErrCodeCancelled)
+	}
+	if emitted != 0 {
+		t.Fatalf("cancelled multi translation emitted %d events", emitted)
+	}
+	if app.translateCache.len() != 0 {
+		t.Fatalf("cancelled multi translation should not populate cache, got %d entries", app.translateCache.len())
+	}
+}
 
 // TestNormalizeEngines 验证引擎列表归一化：去重、小写、过滤非法值、空列表兜底
 func TestNormalizeEngines(t *testing.T) {
@@ -16,13 +103,14 @@ func TestNormalizeEngines(t *testing.T) {
 		in   []string
 		want []string
 	}{
-		{"空列表兜底", []string{}, []string{"tencent", "aliyun"}},
-		{"nil 兜底", nil, []string{"tencent", "aliyun"}},
+		{"空列表兜底", []string{}, []string{"tencent", "aliyun", "baidu"}},
+		{"nil 兜底", nil, []string{"tencent", "aliyun", "baidu"}},
 		{"单引擎", []string{"tencent"}, []string{"tencent"}},
 		{"大小写归一", []string{"TENCENT", "Aliyun"}, []string{"tencent", "aliyun"}},
 		{"去重", []string{"tencent", "tencent", "aliyun"}, []string{"tencent", "aliyun"}},
 		{"过滤非法值", []string{"tencent", "deepseek", "", "  ", "aliyun"}, []string{"tencent", "aliyun"}},
-		{"全非法值兜底", []string{"xxx", "yyy"}, []string{"tencent", "aliyun"}},
+		{"百度引擎", []string{"baidu", "tencent"}, []string{"baidu", "tencent"}},
+		{"全非法值兜底", []string{"xxx", "yyy"}, []string{"tencent", "aliyun", "baidu"}},
 		{"含空白字符", []string{"  tencent  ", "aliyun"}, []string{"tencent", "aliyun"}},
 	}
 	for _, c := range cases {
@@ -88,6 +176,39 @@ func TestTranslateTextRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestTranslateTextValidatesAndNormalizesLanguages(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	for _, tt := range []struct {
+		name   string
+		source string
+		target string
+	}{
+		{name: "missing target", source: "en", target: ""},
+		{name: "invalid source", source: "unknown", target: "zh"},
+		{name: "invalid target", source: "en", target: "unknown"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			res := app.TranslateText(TranslateRequest{
+				RequestID: "invalid-language",
+				Text:      "hello",
+				Source:    tt.source,
+				Target:    tt.target,
+				Engine:    "tencent",
+			})
+			if res.ErrorCode != ErrCodeInvalidInput {
+				t.Fatalf("ErrorCode = %q, want %q", res.ErrorCode, ErrCodeInvalidInput)
+			}
+		})
+	}
+
+	if got := normalizeLanguageCode(" JA "); got != "jp" {
+		t.Fatalf("normalizeLanguageCode(JA) = %q, want jp", got)
+	}
+	if got := normalizeLanguageCode("KO"); got != "kr" {
+		t.Fatalf("normalizeLanguageCode(KO) = %q, want kr", got)
+	}
+}
+
 func TestTranslateMultiRejectsEmptyInput(t *testing.T) {
 	res := NewAppWithDataDir(t.TempDir()).TranslateMulti(MultiTranslateRequest{RequestID: "multi-empty", Text: "  ", Source: "en", Target: "zh", Engines: []string{"tencent", "aliyun"}})
 	if res.RequestID != "multi-empty" {
@@ -103,6 +224,72 @@ func TestTranslateMultiRejectsEmptyInput(t *testing.T) {
 	}
 }
 
+func TestTranslateMultiRejectsInvalidLanguageRoute(t *testing.T) {
+	res := NewAppWithDataDir(t.TempDir()).TranslateMulti(MultiTranslateRequest{
+		RequestID: "multi-invalid-language",
+		Text:      "hello",
+		Source:    "en",
+		Target:    "",
+		Engines:   []string{"tencent"},
+	})
+	result := res.Results["tencent"]
+	if result.ErrorCode != ErrCodeInvalidInput {
+		t.Fatalf("ErrorCode = %q, want %q", result.ErrorCode, ErrCodeInvalidInput)
+	}
+}
+
+func TestTranslateMultiEmitsCachedEngineResults(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	app.translateCache.set(cacheKey("tencent", "en", "zh", "hello"), "cached result")
+	var emitted []EngineTranslateResult
+	app.eventEmit = func(result EngineTranslateResult) {
+		emitted = append(emitted, result)
+	}
+
+	result := app.TranslateMulti(MultiTranslateRequest{
+		RequestID: "cached-stream",
+		Text:      "hello",
+		Source:    "en",
+		Target:    "zh",
+		Engines:   []string{"tencent"},
+	})
+
+	if result.Results["tencent"].Text != "cached result" {
+		t.Fatalf("cached result = %q, want cached result", result.Results["tencent"].Text)
+	}
+	if len(emitted) != 1 || emitted[0].Text != "cached result" {
+		t.Fatalf("cached engine should emit one streaming result, got %#v", emitted)
+	}
+}
+
+func TestBaiduDomainCacheIsolationAndFallbackNotice(t *testing.T) {
+	general := translationResultCacheKey("baidu", "general", "fr", "zh", "bonjour")
+	field := translationResultCacheKey("baidu", "it", "fr", "zh", "bonjour")
+	if general == field {
+		t.Fatal("Baidu general and field modes must not share cache keys")
+	}
+
+	config.InvalidateCache()
+	app := NewAppWithDataDir(t.TempDir())
+	cfg := config.DefaultCloudConfig()
+	cfg.Baidu = config.BaiduConfig{AppID: "draft", SecretKey: "draft", Domain: "it"}
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	app.translateInvoke = func(_ context.Context, engine, _, _, _ string) (string, error) {
+		if engine != "baidu" {
+			t.Fatalf("engine = %q", engine)
+		}
+		return "你好", nil
+	}
+	result := app.TranslateText(TranslateRequest{
+		RequestID: "baidu-fallback", Text: "bonjour", Source: "fr", Target: "zh", Engine: "baidu",
+	})
+	if result.Text != "你好" || result.Notice == "" {
+		t.Fatalf("fallback result = %+v", result)
+	}
+}
+
 // TestSaveLoadHistory_RoundTrip 保存后读取应一致
 func TestSaveLoadHistory_RoundTrip(t *testing.T) {
 	app := NewAppWithDataDir(t.TempDir())
@@ -115,11 +302,11 @@ func TestSaveLoadHistory_RoundTrip(t *testing.T) {
 		{ID: 2, Input: "world", Output: "世界", Source: "en", Target: "zh", Time: "10:01"},
 	}
 
-	if err := app.SaveHistory(entries); err != nil {
+	if err := app.saveHistory(entries); err != nil {
 		t.Fatalf("SaveHistory 失败: %v", err)
 	}
 
-	got, err := app.LoadHistory()
+	got, err := app.loadHistory()
 	if err != nil {
 		t.Fatalf("LoadHistory 失败: %v", err)
 	}
@@ -135,7 +322,7 @@ func TestLoadHistory_MissingFile(t *testing.T) {
 	_ = os.Remove(path)
 	defer os.Remove(path)
 
-	got, err := app.LoadHistory()
+	got, err := app.loadHistory()
 	if err != nil {
 		t.Fatalf("期望 nil 错误，得到 %v", err)
 	}
@@ -157,11 +344,11 @@ func TestSaveHistory_TruncatesTo200(t *testing.T) {
 		entries[i] = HistoryEntry{ID: int64(i), Input: "text", Output: "out", Source: "en", Target: "zh", Time: "10:00"}
 	}
 
-	if err := app.SaveHistory(entries); err != nil {
+	if err := app.saveHistory(entries); err != nil {
 		t.Fatalf("SaveHistory 失败: %v", err)
 	}
 
-	got, err := app.LoadHistory()
+	got, err := app.loadHistory()
 	if err != nil {
 		t.Fatalf("LoadHistory 失败: %v", err)
 	}
@@ -177,11 +364,11 @@ func TestSaveHistory_EmptyList(t *testing.T) {
 	_ = os.Remove(path)
 	defer os.Remove(path)
 
-	if err := app.SaveHistory([]HistoryEntry{}); err != nil {
+	if err := app.saveHistory([]HistoryEntry{}); err != nil {
 		t.Fatalf("SaveHistory 失败: %v", err)
 	}
 
-	got, err := app.LoadHistory()
+	got, err := app.loadHistory()
 	if err != nil {
 		t.Fatalf("LoadHistory 失败: %v", err)
 	}
@@ -201,10 +388,48 @@ func TestLoadHistory_InvalidJSON(t *testing.T) {
 		t.Fatalf("写入测试文件失败: %v", err)
 	}
 
-	_, err := app.LoadHistory()
+	_, err := app.loadHistory()
 	if err == nil {
 		t.Error("损坏 JSON 期望返回错误，得到 nil")
 	}
+}
+
+func TestLoadHistory_NormalizesNullAndOversizedFiles(t *testing.T) {
+	t.Run("null", func(t *testing.T) {
+		app := NewAppWithDataDir(t.TempDir())
+		if err := os.WriteFile(app.getHistoryPath(), []byte("null"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := app.loadHistory()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got == nil || len(got) != 0 {
+			t.Fatalf("null history should become a non-nil empty slice, got %#v", got)
+		}
+	})
+
+	t.Run("oversized", func(t *testing.T) {
+		app := NewAppWithDataDir(t.TempDir())
+		entries := make([]HistoryEntry, 201)
+		for i := range entries {
+			entries[i].ID = int64(i)
+		}
+		data, err := json.Marshal(entries)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(app.getHistoryPath(), data, 0600); err != nil {
+			t.Fatal(err)
+		}
+		got, err := app.loadHistory()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got) != 200 {
+			t.Fatalf("oversized history should be capped at 200 entries, got %d", len(got))
+		}
+	})
 }
 
 // TestGetHistoryPath_CreatesDir 历史路径所在目录会被自动创建
@@ -214,6 +439,91 @@ func TestGetHistoryPath_CreatesDir(t *testing.T) {
 	dir := filepath.Dir(path)
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		t.Errorf("期望目录已创建: %s", dir)
+	}
+}
+
+func TestQueryAppendClearHistory(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	for i := 0; i < 25; i++ {
+		entry := HistoryEntry{ID: int64(i), Input: fmt.Sprintf("input-%02d", i), Output: fmt.Sprintf("output-%02d", i), Source: "en", Target: "zh", Time: "now"}
+		added, err := app.AppendHistory(entry)
+		if err != nil || !added {
+			t.Fatalf("append %d: added=%v err=%v", i, added, err)
+		}
+	}
+	page, err := app.QueryHistory(HistoryQuery{Offset: 0, Limit: 10})
+	if err != nil || len(page.Entries) != 10 || page.Total != 25 || !page.HasMore {
+		t.Fatalf("first page = %+v err=%v", page, err)
+	}
+	search, err := app.QueryHistory(HistoryQuery{Query: "INPUT-02", Limit: 10})
+	if err != nil || search.Total != 1 || search.Entries[0].Input != "input-02" {
+		t.Fatalf("search = %+v err=%v", search, err)
+	}
+	added, err := app.AppendHistory(page.Entries[0])
+	if err != nil || added {
+		t.Fatalf("latest duplicate: added=%v err=%v", added, err)
+	}
+	if err := app.ClearHistory(); err != nil {
+		t.Fatal(err)
+	}
+	empty, err := app.QueryHistory(HistoryQuery{})
+	if err != nil || empty.Total != 0 || empty.Entries == nil {
+		t.Fatalf("cleared page = %+v err=%v", empty, err)
+	}
+}
+
+func TestAppendHistoryConcurrentKeepsLimit(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	var wg sync.WaitGroup
+	for i := 0; i < 240; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			_, err := app.AppendHistory(HistoryEntry{ID: int64(id), Input: fmt.Sprintf("input-%03d", id), Output: "output", Source: "en", Target: "zh"})
+			if err != nil {
+				t.Errorf("append %d: %v", id, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	page, err := app.QueryHistory(HistoryQuery{Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if page.Total != 200 || len(page.Entries) != 50 || !page.HasMore {
+		t.Fatalf("concurrent page = %+v", page)
+	}
+}
+
+func TestExportHistoryCancelAndSuccess(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	if _, err := app.AppendHistory(HistoryEntry{ID: 1, Input: "hello", Output: "你好", Source: "en", Target: "zh"}); err != nil {
+		t.Fatal(err)
+	}
+	app.saveFileDialog = func(context.Context, runtime.SaveDialogOptions) (string, error) { return "", nil }
+	if exported, err := app.ExportHistory(); err != nil || exported {
+		t.Fatalf("cancel: exported=%v err=%v", exported, err)
+	}
+	path := filepath.Join(t.TempDir(), "export.json")
+	app.saveFileDialog = func(context.Context, runtime.SaveDialogOptions) (string, error) { return path, nil }
+	if exported, err := app.ExportHistory(); err != nil || !exported {
+		t.Fatalf("success: exported=%v err=%v", exported, err)
+	}
+	if data, err := os.ReadFile(path); err != nil || !bytes.Contains(data, []byte("hello")) {
+		t.Fatalf("export data=%q err=%v", data, err)
+	}
+}
+
+func TestTranslateRejectsOversizedInput(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	input := strings.Repeat("a", maxInputBytes+1)
+	result := app.TranslateText(TranslateRequest{Text: input, Source: "en", Target: "zh", Engine: "tencent"})
+	if result.ErrorCode != ErrCodeInvalidInput {
+		t.Fatalf("single error code = %q", result.ErrorCode)
+	}
+	multi := app.TranslateMulti(MultiTranslateRequest{Text: input, Source: "en", Target: "zh", Engines: []string{"tencent"}})
+	if multi.Results["tencent"].ErrorCode != ErrCodeInvalidInput {
+		t.Fatalf("multi result = %+v", multi.Results)
 	}
 }
 
@@ -243,6 +553,10 @@ func TestTranslateText_MissingCreds(t *testing.T) {
 	if res.ErrorCode != "credentials" {
 		t.Errorf("期望错误码 credentials，得到 %q", res.ErrorCode)
 	}
+	res = app.TranslateText(TranslateRequest{RequestID: "baidu-missing", Text: "hello", Source: "en", Target: "zh", Engine: "baidu"})
+	if res.ErrorCode != ErrCodeCredentials {
+		t.Errorf("百度缺少凭据错误码 = %q, want credentials", res.ErrorCode)
+	}
 }
 
 func TestConnectionDraftDoesNotPersist(t *testing.T) {
@@ -263,5 +577,43 @@ func TestConnectionDraftDoesNotPersist(t *testing.T) {
 	}
 	if got.Tencent.SecretKey != "persisted-key" {
 		t.Fatalf("connection test mutated persisted config: %q", got.Tencent.SecretKey)
+	}
+}
+
+func TestGetMemoryStats(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	// 写入一些缓存数据使统计非零
+	app.translateCache.set("k1", strings.Repeat("v", 100))
+	app.detectCache.set("k2", "zh")
+
+	stats := app.GetMemoryStats()
+	if stats.ThresholdBytes != memoryThresholdBytes {
+		t.Errorf("threshold = %d, want %d", stats.ThresholdBytes, memoryThresholdBytes)
+	}
+	if stats.TranslateCache.Items != 1 || stats.TranslateCache.Bytes <= 0 {
+		t.Errorf("translateCache = %+v, want 1 item with bytes>0", stats.TranslateCache)
+	}
+	if stats.DetectCache.Items != 1 || stats.DetectCache.Bytes <= 0 {
+		t.Errorf("detectCache = %+v, want 1 item with bytes>0", stats.DetectCache)
+	}
+	if stats.AllocBytes <= 0 || stats.SysBytes <= 0 {
+		t.Errorf("runtime stats = alloc=%d sys=%d, both should be >0", stats.AllocBytes, stats.SysBytes)
+	}
+	if stats.ExceedsThreshold {
+		t.Error("fresh app should not exceed memory threshold")
+	}
+}
+
+func TestRunGC(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	// 分配一些垃圾
+	for i := 0; i < 1000; i++ {
+		_ = strings.Repeat("x", 1024)
+	}
+	before := app.GetMemoryStats()
+	app.RunGC()
+	after := app.GetMemoryStats()
+	if after.NumGC <= before.NumGC {
+		t.Errorf("NumGC did not increase: before=%d after=%d", before.NumGC, after.NumGC)
 	}
 }

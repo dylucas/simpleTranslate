@@ -1,5 +1,6 @@
 <script lang="ts">
-  import { Check, Copy, Settings, Square, Volume2 } from "@lucide/svelte";
+  import { AlertCircle, Check, Copy, Settings, Square, Volume2 } from "@lucide/svelte";
+  import { ENGINE_IDS, engineLabel } from "./engines";
   import type { EngineId, EngineTranslateResult } from "./types";
 
   interface Props {
@@ -17,8 +18,8 @@
   }
 
   let { engines, outputs, loading, copied, speakingText, target, isConfigured, onToggle, onCopy, onSpeak, onSettings }: Props = $props();
-  const allEngines: EngineId[] = ["tencent", "aliyun"];
-  const label = (engine: EngineId) => engine === "tencent" ? "混元" : "阿里云";
+  const allEngines: EngineId[] = ENGINE_IDS;
+  const label = (engine: EngineId) => engineLabel(engine);
 </script>
 
 <div class="compare-toolbar">
@@ -60,6 +61,7 @@
         <div class="engine-empty error-copy">{result.error}</div>
       {:else}
         <textarea readonly value={result?.text ?? ""} placeholder="等待翻译结果" aria-label={`${label(engine)}译文`}></textarea>
+        {#if result?.notice}<div class="result-notice" role="status"><AlertCircle size={13} />{result.notice}</div>{/if}
       {/if}
     </section>
   {/each}
@@ -84,6 +86,8 @@
   .result-actions button.success { color: var(--success); }
   .state { color: var(--info); font-size: var(--fs-xs); }
   .state.error, .error-copy { color: var(--danger); }
+  .result-notice { display: flex; min-height: 30px; flex: 0 0 auto; align-items: center; gap: var(--sp-2); border-top: 1px solid var(--warning-border); padding: 0 var(--sp-3); background: var(--warning-soft); color: var(--text-sec); font-size: var(--fs-xs); }
+  .result-notice :global(svg) { flex: 0 0 auto; color: var(--warning); }
   textarea { width: 100%; min-height: 0; flex: 1; resize: none; border: 0; outline: 0; padding: var(--sp-3); background: transparent; color: var(--text-main); font: var(--fw-regular) var(--fs-base)/var(--lh-relaxed) var(--font-sans); }
   .engine-empty { display: flex; min-height: 110px; flex: 1; align-items: center; justify-content: center; gap: var(--sp-2); padding: var(--sp-4); color: var(--text-muted); font-size: var(--fs-sm); }
   .engine-empty button { color: var(--primary); text-decoration: underline; }

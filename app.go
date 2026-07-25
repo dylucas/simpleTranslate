@@ -2,13 +2,18 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"simpleTranslate/internal/storage"
 	"simpleTranslate/translate"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -19,10 +24,24 @@ import (
 type App struct {
 	ctx     context.Context
 	dataDir string
-	// 翻译结果缓存：key = engine|source|target|text，避免重复调用 API
+	// eventEmit is injectable for tests; production emits through the Wails runtime.
+	eventEmit func(EngineTranslateResult)
+	// 翻译结果缓存：百度额外包含领域模式，避免通用/领域结果混用。
 	translateCache *lruCache
 	// 语种识别缓存：key = engine|text，同一文本不重复检测
 	detectCache *lruCache
+	// activeTranslations tracks cancellable requests by their frontend request ID.
+	activeTranslationsMu sync.Mutex
+	activeTranslations   map[string]*activeTranslation
+	historyMu            sync.Mutex
+	saveFileDialog       func(context.Context, runtime.SaveDialogOptions) (string, error)
+	// translateInvoke is an optional test seam for exercising request cancellation
+	// without making a real cloud request.
+	translateInvoke func(context.Context, string, string, string, string) (string, error)
+}
+
+type activeTranslation struct {
+	cancel context.CancelFunc
 }
 
 func NewApp() *App {
@@ -38,14 +57,69 @@ func NewApp() *App {
 // they never read or mutate a user's real configuration.
 func NewAppWithDataDir(dataDir string) *App {
 	return &App{
-		dataDir:        dataDir,
-		translateCache: newLRUCache(128),
-		detectCache:    newLRUCache(128),
+		dataDir:            dataDir,
+		translateCache:     newLRUCache(64, 512<<10),
+		detectCache:        newLRUCache(64, 16<<10),
+		activeTranslations: make(map[string]*activeTranslation),
+		saveFileDialog:     runtime.SaveFileDialog,
 	}
 }
 
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+}
+
+func (a *App) beginTranslation(requestID string) (context.Context, func()) {
+	base := a.ctx
+	if base == nil {
+		base = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(base, engineTimeout)
+	if strings.TrimSpace(requestID) == "" {
+		return ctx, cancel
+	}
+
+	entry := &activeTranslation{cancel: cancel}
+	a.activeTranslationsMu.Lock()
+	if a.activeTranslations == nil {
+		a.activeTranslations = make(map[string]*activeTranslation)
+	}
+	previous := a.activeTranslations[requestID]
+	a.activeTranslations[requestID] = entry
+	a.activeTranslationsMu.Unlock()
+	if previous != nil {
+		previous.cancel()
+	}
+
+	finish := func() {
+		cancel()
+		a.activeTranslationsMu.Lock()
+		if a.activeTranslations[requestID] == entry {
+			delete(a.activeTranslations, requestID)
+		}
+		a.activeTranslationsMu.Unlock()
+	}
+	return ctx, finish
+}
+
+// CancelTranslation stops an active translation identified by requestID.
+// Empty or unknown IDs are intentionally treated as non-cancellable.
+func (a *App) CancelTranslation(requestID string) bool {
+	requestID = strings.TrimSpace(requestID)
+	if requestID == "" {
+		return false
+	}
+	a.activeTranslationsMu.Lock()
+	entry, ok := a.activeTranslations[requestID]
+	if ok {
+		delete(a.activeTranslations, requestID)
+	}
+	a.activeTranslationsMu.Unlock()
+	if !ok {
+		return false
+	}
+	entry.cancel()
+	return true
 }
 
 type TranslateResult struct {
@@ -54,6 +128,7 @@ type TranslateResult struct {
 	AutoSrc   string `json:"autoSrc"`
 	Target    string `json:"target"`
 	Text      string `json:"text"`
+	Notice    string `json:"notice,omitempty"`
 	// 结构化错误信息：成功时为空，失败时填充。
 	// 不再通过 Go error 返回，确保前端总能通过 result 拿到结构化错误用于差异化提示与重试策略。
 	Error     string `json:"error,omitempty"`     // 用户可读错误字符串
@@ -64,6 +139,7 @@ type EngineTranslateResult struct {
 	RequestID string `json:"requestId"`
 	Engine    string `json:"engine"`
 	Text      string `json:"text"`
+	Notice    string `json:"notice,omitempty"`
 	Error     string `json:"error,omitempty"`     // 兼容旧前端：用户可读错误字符串
 	ErrorCode string `json:"errorCode,omitempty"` // 结构化错误类别（credentials/network/timeout/...），前端按类别差异化提示与重试
 }
@@ -92,6 +168,18 @@ type MultiTranslateRequest struct {
 	Engines   []string `json:"engines"`
 }
 
+type engineTranslation struct {
+	Text   string
+	Notice string
+}
+
+type prefetchedTranslation struct {
+	Engine string
+	Text   string
+	Source string
+	Target string
+}
+
 // HistoryEntry 与前端历史记录结构保持一致
 type HistoryEntry struct {
 	ID     int64  `json:"id"`
@@ -102,50 +190,86 @@ type HistoryEntry struct {
 	Time   string `json:"time"`
 }
 
+type HistoryQuery struct {
+	Query  string `json:"query"`
+	Offset int    `json:"offset"`
+	Limit  int    `json:"limit"`
+}
+
+type HistoryPage struct {
+	Entries []HistoryEntry `json:"entries"`
+	Total   int            `json:"total"`
+	HasMore bool           `json:"hasMore"`
+}
+
 // TranslateText 给前端调用的统一入口。
 // 不再返回 Go error：所有错误通过 TranslateResult.Error/ErrorCode 字段返回，
 // 前端总能拿到结构化错误用于差异化提示与重试策略。
 func (a *App) TranslateText(req TranslateRequest) TranslateResult {
 	text, source, target, engine := req.Text, req.Source, req.Target, req.Engine
-	empty := TranslateResult{RequestID: req.RequestID, Source: source, Target: target}
 	engine = strings.ToLower(strings.TrimSpace(engine))
+	source = normalizeLanguageCode(source)
+	target = normalizeLanguageCode(target)
+	empty := TranslateResult{RequestID: req.RequestID, Source: source, Target: target}
 	if strings.TrimSpace(text) == "" {
 		return translateResultError(empty, newTranslateError(ErrCodeInvalidInput, engine, "输入文本为空", nil))
+	}
+	if len(text) > maxInputBytes {
+		return translateResultError(empty, newTranslateError(ErrCodeInvalidInput, engine, fmt.Sprintf("原文不能超过 %d 个 UTF-8 字节", maxInputBytes), nil))
 	}
 	if !isSupportedEngine(engine) {
 		return translateResultError(empty, newTranslateError(ErrCodeInvalidInput, engine, "不支持的翻译引擎", nil))
 	}
+	if err := validateLanguageRoute(source, target); err != nil {
+		err.Engine = engine
+		return translateResultError(empty, err)
+	}
+	requestCtx, finish := a.beginTranslation(req.RequestID)
+	defer finish()
 	src := source
+	var prefetched *prefetchedTranslation
 
 	// 自动识别语种（与 TranslateMulti 保持一致：best-effort 跨引擎兜底）
 	if src == "" || src == "auto" {
 		// 优先使用当前引擎；失败时按引擎列表兜底
 		engines := engineFallbackOrder(engine)
-		detected, err := a.detectLanguageBestEffort(text, engines)
+		detected, detectedTranslation, err := a.detectLanguageBestEffort(requestCtx, text, target, engines)
 		if err != nil {
 			te := classifyError(engine, err)
 			te.Message = "语言识别失败：" + te.Message
 			return translateResultError(empty, te)
 		}
 		src = detected
+		prefetched = detectedTranslation
 	}
 
 	// 目标语言兜底
 	tgt := fallbackTarget(src, target)
 
 	// 命中缓存直接返回，避免重复调用 API
-	ck := cacheKey(engine, src, tgt, text)
+	mode, notice, err := a.engineExecutionContext(engine, src, tgt)
+	if err != nil {
+		return translateResultError(empty, classifyError(engine, err))
+	}
+	ck := translationResultCacheKey(engine, mode, src, tgt, text)
+	if reusablePrefetchedTranslation(prefetched, engine, mode, src, tgt) {
+		a.translateCache.set(ck, prefetched.Text)
+	}
 	if v, ok := a.translateCache.get(ck); ok {
+		if err := requestCtx.Err(); err != nil {
+			return translateResultError(empty, classifyError(engine, err))
+		}
 		return TranslateResult{
 			RequestID: req.RequestID,
 			Source:    source,
 			AutoSrc:   src,
 			Target:    tgt,
 			Text:      v,
+			Notice:    notice,
 		}
 	}
 
-	result, err := a.translateWithEngine(engine, text, src, tgt)
+	result, err := a.translateWithEngine(requestCtx, engine, text, src, tgt)
 	if err != nil {
 		te := wrapTranslateError(engine, err)
 		empty.AutoSrc = src
@@ -154,16 +278,25 @@ func (a *App) TranslateText(req TranslateRequest) TranslateResult {
 		empty.ErrorCode = te.Code
 		return empty
 	}
+	if err := requestCtx.Err(); err != nil {
+		empty.AutoSrc = src
+		empty.Target = tgt
+		return translateResultError(empty, classifyError(engine, err))
+	}
+	if result.Notice == "" {
+		result.Notice = notice
+	}
 
 	// 写入缓存供下次命中
-	a.translateCache.set(ck, result)
+	a.translateCache.set(ck, result.Text)
 
 	return TranslateResult{
 		RequestID: req.RequestID,
 		Source:    source,
 		AutoSrc:   src,
 		Target:    tgt,
-		Text:      result,
+		Text:      result.Text,
+		Notice:    result.Notice,
 	}
 }
 
@@ -174,25 +307,102 @@ func translateResultError(result TranslateResult, err *TranslateError) Translate
 }
 
 func isSupportedEngine(engine string) bool {
-	return engine == "tencent" || engine == "aliyun"
+	return engine == "tencent" || engine == "aliyun" || engine == "baidu"
+}
+
+func normalizeLanguageCode(code string) string {
+	code = strings.ToLower(strings.TrimSpace(code))
+	switch code {
+	case "ja":
+		return "jp"
+	case "ko":
+		return "kr"
+	default:
+		return code
+	}
+}
+
+func isSupportedLanguage(code string) bool {
+	switch code {
+	case "zh", "en", "jp", "kr", "fr", "de", "ru", "es":
+		return true
+	default:
+		return false
+	}
+}
+
+func validateLanguageRoute(source, target string) *TranslateError {
+	if source != "" && source != "auto" && !isSupportedLanguage(source) {
+		return newTranslateError(ErrCodeInvalidInput, "", "不支持的源语言", nil)
+	}
+	if !isSupportedLanguage(target) {
+		return newTranslateError(ErrCodeInvalidInput, "", "不支持的目标语言", nil)
+	}
+	return nil
 }
 
 func engineFallbackOrder(engine string) []string {
-	if engine == "aliyun" {
-		return []string{"aliyun", "tencent"}
+	all := []string{"tencent", "aliyun", "baidu"}
+	if !isSupportedEngine(engine) {
+		return all
 	}
-	return []string{"tencent", "aliyun"}
+	out := []string{engine}
+	for _, candidate := range all {
+		if candidate != engine {
+			out = append(out, candidate)
+		}
+	}
+	return out
 }
 
-func (a *App) translateWithEngine(engine, text, source, target string) (string, error) {
+func (a *App) translateWithEngine(ctx context.Context, engine, text, source, target string) (engineTranslation, error) {
+	if a.translateInvoke != nil {
+		text, err := a.translateInvoke(ctx, engine, text, source, target)
+		return engineTranslation{Text: text}, err
+	}
 	cfg, err := a.GetConfig()
 	if err != nil {
-		return "", err
+		return engineTranslation{}, err
 	}
-	if engine == "aliyun" {
-		return translate.TranslateGeneralWithConfig(text, source, target, cfg.Aliyun)
+	switch engine {
+	case "aliyun":
+		out, err := translate.TranslateGeneralWithContext(ctx, text, source, target, cfg.Aliyun)
+		return engineTranslation{Text: out}, err
+	case "baidu":
+		out, err := translate.TranslateBaiduWithContext(ctx, text, source, target, cfg.Baidu)
+		return engineTranslation{Text: out.Text, Notice: out.Notice}, err
+	default:
+		out, err := translate.TranslateWithContext(ctx, text, source, target, cfg.Tencent)
+		return engineTranslation{Text: out}, err
 	}
-	return translate.TranslateWithConfig(text, source, target, cfg.Tencent)
+}
+
+func (a *App) engineExecutionContext(engine, source, target string) (mode, notice string, err error) {
+	if engine != "baidu" {
+		return "", "", nil
+	}
+	cfg, err := a.GetConfig()
+	if err != nil {
+		return "", "", err
+	}
+	return cfg.Baidu.Domain, translate.BaiduRouteNotice(cfg.Baidu.Domain, source, target), nil
+}
+
+func translationResultCacheKey(engine, mode, source, target, text string) string {
+	if engine == "baidu" {
+		return cacheKey(engine, mode, source, target, text)
+	}
+	return cacheKey(engine, source, target, text)
+}
+
+func reusablePrefetchedTranslation(prefetched *prefetchedTranslation, engine, mode, source, target string) bool {
+	if prefetched == nil || engine != "baidu" || prefetched.Engine != engine {
+		return false
+	}
+	if prefetched.Source != source || prefetched.Target != target {
+		return false
+	}
+	return mode == "general" || !translate.BaiduDomainSupportsRoute(mode, source, target)
 }
 
 // fallbackTarget 当源语言与目标语言相同时，按习惯切换目标语言
@@ -211,41 +421,72 @@ func fallbackTarget(src, target string) string {
 }
 
 func normalizeEngines(engines []string) []string {
-	seen := map[string]bool{}
 	out := make([]string, 0, len(engines))
 	for _, e := range engines {
 		e = strings.ToLower(strings.TrimSpace(e))
 		if e == "" {
 			continue
 		}
-		if e != "tencent" && e != "aliyun" {
+		if e != "tencent" && e != "aliyun" && e != "baidu" {
 			continue
 		}
-		if seen[e] {
+		// 引擎最多 3 个，线性扫描比 map 更省内存
+		dup := false
+		for _, existing := range out {
+			if existing == e {
+				dup = true
+				break
+			}
+		}
+		if dup {
 			continue
 		}
-		seen[e] = true
 		out = append(out, e)
 	}
 	if len(out) == 0 {
-		out = []string{"tencent", "aliyun"}
+		out = []string{"tencent", "aliyun", "baidu"}
 	}
 	return out
 }
 
-// cacheKey 构造缓存键，用 \x1f（单元分隔符）分隔避免拼接歧义
-func cacheKey(parts ...string) string {
-	return strings.Join(parts, "\x1f")
+// sha256Pool 复用 sha256 哈希对象，避免每次缓存键计算都分配新对象。
+var sha256Pool = sync.Pool{
+	New: func() interface{} { return sha256.New() },
 }
 
-// detectLanguageBestEffort 尝试多引擎识别语种，优先命中缓存。
-// Try in given order; prefer aliyun if present because it has dedicated API.
-func (a *App) detectLanguageBestEffort(text string, engines []string) (string, error) {
+// cacheKey returns a fixed-size digest so the cache never retains source text
+// through its keys. Length-prefixing keeps field boundaries unambiguous.
+// 使用对象池 + 直接字节写入，避免 fmt.Fprintf 与 h.Sum(nil) 的分配。
+func cacheKey(parts ...string) string {
+	h := sha256Pool.Get().(hash.Hash)
+	h.Reset()
+	defer sha256Pool.Put(h)
+	var lenBuf [20]byte
+	for _, part := range parts {
+		n := strconv.AppendInt(lenBuf[:0], int64(len(part)), 10)
+		h.Write(n)
+		h.Write(colonBytes)
+		_, _ = h.Write([]byte(part))
+	}
+	var sum [sha256.Size]byte
+	h.Sum(sum[:0])
+	return hex.EncodeToString(sum[:])
+}
+
+var colonBytes = []byte{':'}
+
+// detectLanguageBestEffort tries each engine in order. When Baidu's dedicated
+// detector cannot resolve one of the application's languages, general
+// translation with from=auto provides both the language and a reusable result.
+func (a *App) detectLanguageBestEffort(ctx context.Context, text, target string, engines []string) (string, *prefetchedTranslation, error) {
 	var engineErrors []error
 	for _, e := range engines {
+		if err := ctx.Err(); err != nil {
+			return "", nil, err
+		}
 		// 命中缓存直接返回，避免重复调用
 		if v, ok := a.detectCache.get(cacheKey(e, text)); ok {
-			return v, nil
+			return v, nil, nil
 		}
 		var (
 			lang string
@@ -253,29 +494,65 @@ func (a *App) detectLanguageBestEffort(text string, engines []string) (string, e
 		)
 		cfg, cfgErr := a.GetConfig()
 		if cfgErr != nil {
-			err = cfgErr
+			engineErrors = append(engineErrors, fmt.Errorf("%s: %w", e, cfgErr))
+			continue
 		} else if e == "aliyun" {
-			lang, err = translate.GetDetectLanguageWithConfig(text, cfg.Aliyun)
+			lang, err = translate.GetDetectLanguageWithContext(ctx, text, cfg.Aliyun)
+		} else if e == "baidu" {
+			lang, err = translate.DetectBaiduLanguageWithContext(ctx, text, cfg.Baidu)
 		} else {
-			lang, err = translate.DetectLanguageWithConfig(text, cfg.Tencent)
+			lang, err = translate.DetectLanguageWithContext(ctx, text, cfg.Tencent)
 		}
-		if err == nil && lang != "" {
+		if err == nil && isSupportedLanguage(lang) {
+			if ctx.Err() != nil {
+				return "", nil, ctx.Err()
+			}
 			a.detectCache.set(cacheKey(e, text), lang)
-			return lang, nil
+			return lang, nil, nil
+		}
+
+		if e == "baidu" {
+			general, generalErr := translate.TranslateBaiduGeneralWithContext(ctx, text, "auto", target, cfg.Baidu)
+			if generalErr == nil && isSupportedLanguage(general.From) {
+				if ctx.Err() != nil {
+					return "", nil, ctx.Err()
+				}
+				a.detectCache.set(cacheKey(e, text), general.From)
+				return general.From, &prefetchedTranslation{
+					Engine: "baidu",
+					Text:   general.Text,
+					Source: general.From,
+					Target: target,
+				}, nil
+			}
+			if err != nil {
+				engineErrors = append(engineErrors, fmt.Errorf("%s: %w", e, err))
+			} else if lang != "" {
+				engineErrors = append(engineErrors, fmt.Errorf("%s: 不支持的识别结果 %q", e, lang))
+			}
+			if generalErr != nil {
+				engineErrors = append(engineErrors, fmt.Errorf("%s general auto: %w", e, generalErr))
+			} else if general.From != "" {
+				engineErrors = append(engineErrors, fmt.Errorf("%s general auto: 不支持的识别结果 %q", e, general.From))
+			}
+			continue
 		}
 		if err != nil {
 			engineErrors = append(engineErrors, fmt.Errorf("%s: %w", e, err))
+		} else if lang != "" {
+			engineErrors = append(engineErrors, fmt.Errorf("%s: 不支持的识别结果 %q", e, lang))
 		} else {
 			engineErrors = append(engineErrors, fmt.Errorf("%s: 未返回识别结果", e))
 		}
 	}
-	return "", errors.Join(engineErrors...)
+	return "", nil, errors.Join(engineErrors...)
 }
 
 // engineTimeout 单引擎翻译最大等待时间。
 // 与 translate 包的 HTTP/SDK 超时保持一致，确保超时后底层调用也会自然退出，
 // 不会因外层 select 提前返回而遗留 goroutine。
 const engineTimeout = 30 * time.Second
+const maxInputBytes = 6000
 
 // TranslateMulti 多引擎并发翻译：同一句话同时走多个引擎，返回并排结果。
 // 单引擎超时 engineTimeout，超时的引擎返回 "翻译超时" 错误而非阻塞整体。
@@ -283,18 +560,32 @@ const engineTimeout = 30 * time.Second
 
 func (a *App) TranslateMulti(req MultiTranslateRequest) MultiTranslateResult {
 	text, source, target, engines := req.Text, req.Source, req.Target, req.Engines
+	source = normalizeLanguageCode(source)
+	target = normalizeLanguageCode(target)
 	engines = normalizeEngines(engines)
 	src := source
+	var prefetched *prefetchedTranslation
 	emptyRes := MultiTranslateResult{RequestID: req.RequestID, Source: source, Target: target, Results: map[string]EngineTranslateResult{}}
 	if strings.TrimSpace(text) == "" {
 		err := newTranslateError(ErrCodeInvalidInput, "", "输入文本为空", nil)
 		emptyRes.Results = engineErrorResults(req.RequestID, engines, err)
 		return emptyRes
 	}
+	if len(text) > maxInputBytes {
+		err := newTranslateError(ErrCodeInvalidInput, "", fmt.Sprintf("原文不能超过 %d 个 UTF-8 字节", maxInputBytes), nil)
+		emptyRes.Results = engineErrorResults(req.RequestID, engines, err)
+		return emptyRes
+	}
+	if err := validateLanguageRoute(source, target); err != nil {
+		emptyRes.Results = engineErrorResults(req.RequestID, engines, err)
+		return emptyRes
+	}
+	requestCtx, finish := a.beginTranslation(req.RequestID)
+	defer finish()
 
 	// 自动识别一次，供所有引擎共用
 	if src == "" || src == "auto" {
-		detected, err := a.detectLanguageBestEffort(text, engines)
+		detected, detectedTranslation, err := a.detectLanguageBestEffort(requestCtx, text, target, engines)
 		if err != nil {
 			te := classifyError("", err)
 			te.Message = "语言识别失败：" + te.Message
@@ -303,6 +594,7 @@ func (a *App) TranslateMulti(req MultiTranslateRequest) MultiTranslateResult {
 			return emptyRes
 		}
 		src = detected
+		prefetched = detectedTranslation
 	}
 
 	tgt := fallbackTarget(src, target)
@@ -316,56 +608,76 @@ func (a *App) TranslateMulti(req MultiTranslateRequest) MultiTranslateResult {
 		go func() {
 			defer wg.Done()
 			r := EngineTranslateResult{RequestID: req.RequestID, Engine: engine}
-
-			// 命中缓存直接用，跳过 API 调用
-			ck := cacheKey(engine, src, tgt, text)
-			if v, ok := a.translateCache.get(ck); ok {
-				r.Text = v
+			if err := requestCtx.Err(); err != nil {
+				te := classifyError(engine, err)
+				r.Error = te.Message
+				r.ErrorCode = te.Code
 				mu.Lock()
 				results[engine] = r
 				mu.Unlock()
 				return
 			}
 
-			type outcome struct {
-				text string
-				err  error
+			mode, notice, configErr := a.engineExecutionContext(engine, src, tgt)
+			if configErr != nil {
+				te := classifyError(engine, configErr)
+				r.Error = te.Message
+				r.ErrorCode = te.Code
+				mu.Lock()
+				results[engine] = r
+				mu.Unlock()
+				return
 			}
-			done := make(chan outcome, 1)
-			go func() {
-				var (
-					out string
-					err error
-				)
-				out, err = a.translateWithEngine(engine, text, src, tgt)
-				done <- outcome{out, err}
-			}()
-
-			select {
-			case o := <-done:
-				r.Text = o.text
-				if o.err != nil {
-					te := wrapTranslateError(engine, o.err)
+			// 命中缓存直接用，跳过 API 调用
+			ck := translationResultCacheKey(engine, mode, src, tgt, text)
+			if reusablePrefetchedTranslation(prefetched, engine, mode, src, tgt) {
+				a.translateCache.set(ck, prefetched.Text)
+			}
+			if v, ok := a.translateCache.get(ck); ok {
+				if err := requestCtx.Err(); err != nil {
+					te := classifyError(engine, err)
 					r.Error = te.Message
 					r.ErrorCode = te.Code
 				} else {
-					// 仅缓存成功结果
-					a.translateCache.set(ck, o.text)
+					r.Text = v
+					r.Notice = notice
 				}
-			case <-time.After(engineTimeout):
-				// 底层 HTTP/SDK 已设 30s 超时，内层 goroutine 会自然退出，无需显式取消
-				te := newTranslateError(ErrCodeTimeout, engine, "翻译超时，请稍后重试", nil)
+				mu.Lock()
+				results[engine] = r
+				mu.Unlock()
+				if requestCtx.Err() == nil {
+					a.emitEngineResult(r)
+				}
+				return
+			}
+
+			engineCtx, cancel := context.WithTimeout(requestCtx, engineTimeout)
+			out, err := a.translateWithEngine(engineCtx, engine, text, src, tgt)
+			cancel()
+			if err == nil && requestCtx.Err() != nil {
+				err = requestCtx.Err()
+			}
+			if err != nil {
+				te := wrapTranslateError(engine, err)
 				r.Error = te.Message
 				r.ErrorCode = te.Code
+			} else {
+				r.Text = out.Text
+				r.Notice = out.Notice
+				if r.Notice == "" {
+					r.Notice = notice
+				}
+				// Only successful, non-cancelled requests may populate the cache.
+				a.translateCache.set(ck, out.Text)
 			}
 
 			mu.Lock()
 			results[engine] = r
 			mu.Unlock()
 
-			// 流式推送：单引擎完成后立即触发事件，前端可独立渲染与 loading
-			if a.ctx != nil {
-				runtime.EventsEmit(a.ctx, "translate:engine-result", r)
+			// Cancelled requests are invalidated locally and must not emit late events.
+			if requestCtx.Err() == nil {
+				a.emitEngineResult(r)
 			}
 		}()
 	}
@@ -379,6 +691,16 @@ func (a *App) TranslateMulti(req MultiTranslateRequest) MultiTranslateResult {
 		Results:   results,
 	}
 	return res
+}
+
+func (a *App) emitEngineResult(result EngineTranslateResult) {
+	if a.eventEmit != nil {
+		a.eventEmit(result)
+		return
+	}
+	if a.ctx != nil {
+		runtime.EventsEmit(a.ctx, "translate:engine-result", result)
+	}
 }
 
 func engineErrorResults(requestID string, engines []string, err *TranslateError) map[string]EngineTranslateResult {
@@ -416,14 +738,36 @@ func (a *App) TestConnection(engine string, service ServiceConfig) error {
 	}
 }
 
+// TestBaiduConnection validates draft Baidu credentials without persisting
+// them. The selected translation endpoint is exercised with a supported route.
+func (a *App) TestBaiduConnection(service BaiduConfig) error {
+	ctx, cancel := context.WithTimeout(context.Background(), engineTimeout)
+	defer cancel()
+	service.Domain = strings.ToLower(strings.TrimSpace(service.Domain))
+	probe, source, target := "hello", "en", "zh"
+	if service.Domain == "novel" || service.Domain == "wiki" {
+		probe, source, target = "你好", "zh", "en"
+	}
+	if _, err := translate.TranslateBaiduWithContext(ctx, probe, source, target, service); err != nil {
+		return fmt.Errorf("百度翻译连接测试失败: %v", err)
+	}
+	return nil
+}
+
 // getHistoryPath 返回历史记录文件路径
 func (a *App) getHistoryPath() string {
 	_ = os.MkdirAll(a.dataDir, 0700)
 	return filepath.Join(a.dataDir, "history.json")
 }
 
-// LoadHistory 读取本地持久化的历史记录
-func (a *App) LoadHistory() ([]HistoryEntry, error) {
+// loadHistory reads the compatibility JSON format for internal operations.
+func (a *App) loadHistory() ([]HistoryEntry, error) {
+	a.historyMu.Lock()
+	defer a.historyMu.Unlock()
+	return a.loadHistoryUnlocked()
+}
+
+func (a *App) loadHistoryUnlocked() ([]HistoryEntry, error) {
 	path := a.getHistoryPath()
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -436,11 +780,23 @@ func (a *App) LoadHistory() ([]HistoryEntry, error) {
 	if err := json.Unmarshal(data, &entries); err != nil {
 		return nil, err
 	}
+	if entries == nil {
+		return []HistoryEntry{}, nil
+	}
+	if len(entries) > 200 {
+		entries = entries[:200]
+	}
 	return entries, nil
 }
 
-// SaveHistory 将历史记录写入本地文件（上限 200 条，0600 权限）
-func (a *App) SaveHistory(entries []HistoryEntry) error {
+// saveHistory writes the compatibility JSON format for internal operations.
+func (a *App) saveHistory(entries []HistoryEntry) error {
+	a.historyMu.Lock()
+	defer a.historyMu.Unlock()
+	return a.saveHistoryUnlocked(entries)
+}
+
+func (a *App) saveHistoryUnlocked(entries []HistoryEntry) error {
 	if len(entries) > 200 {
 		entries = entries[:200]
 	}
@@ -450,4 +806,153 @@ func (a *App) SaveHistory(entries []HistoryEntry) error {
 		return err
 	}
 	return storage.WriteFileAtomic(path, data, 0600)
+}
+
+// QueryHistory returns one bounded page without retaining history in memory.
+// 单次遍历完成过滤 + 分页，避免先全量拷贝匹配项再切片。
+func (a *App) QueryHistory(query HistoryQuery) (HistoryPage, error) {
+	a.historyMu.Lock()
+	defer a.historyMu.Unlock()
+	entries, err := a.loadHistoryUnlocked()
+	if err != nil {
+		return HistoryPage{}, err
+	}
+	needle := strings.ToLower(strings.TrimSpace(query.Query))
+	offset := query.Offset
+	if offset < 0 {
+		offset = 0
+	}
+	limit := query.Limit
+	if limit <= 0 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	pageEntries := make([]HistoryEntry, 0, limit)
+	matched := 0
+	for _, entry := range entries {
+		if needle != "" {
+			if !strings.Contains(strings.ToLower(entry.Input), needle) && !strings.Contains(strings.ToLower(entry.Output), needle) {
+				continue
+			}
+		}
+		if matched >= offset && matched < offset+limit {
+			pageEntries = append(pageEntries, entry)
+		}
+		matched++
+	}
+	return HistoryPage{Entries: pageEntries, Total: matched, HasMore: matched > offset+limit}, nil
+}
+
+// AppendHistory atomically prepends a non-duplicate entry and keeps 200 items.
+func (a *App) AppendHistory(entry HistoryEntry) (bool, error) {
+	if strings.TrimSpace(entry.Input) == "" || len(entry.Input) > maxInputBytes {
+		return false, fmt.Errorf("历史原文必须为 1-%d 个 UTF-8 字节", maxInputBytes)
+	}
+	a.historyMu.Lock()
+	defer a.historyMu.Unlock()
+	entries, err := a.loadHistoryUnlocked()
+	if err != nil {
+		return false, err
+	}
+	if len(entries) > 0 {
+		latest := entries[0]
+		if latest.Input == entry.Input && latest.Source == entry.Source && latest.Target == entry.Target {
+			return false, nil
+		}
+	}
+	entries = append([]HistoryEntry{entry}, entries...)
+	return true, a.saveHistoryUnlocked(entries)
+}
+
+func (a *App) ClearHistory() error {
+	a.historyMu.Lock()
+	defer a.historyMu.Unlock()
+	return a.saveHistoryUnlocked([]HistoryEntry{})
+}
+
+// ExportHistory writes the complete on-disk history through the native dialog.
+// Cancelling the dialog is a successful no-op and returns false.
+func (a *App) ExportHistory() (bool, error) {
+	a.historyMu.Lock()
+	entries, err := a.loadHistoryUnlocked()
+	if err != nil {
+		a.historyMu.Unlock()
+		return false, err
+	}
+	data, err := json.MarshalIndent(entries, "", "  ")
+	a.historyMu.Unlock()
+	if err != nil {
+		return false, err
+	}
+	ctx := a.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	path, err := a.saveFileDialog(ctx, runtime.SaveDialogOptions{
+		Title:                "导出历史记录",
+		DefaultFilename:      fmt.Sprintf("simpleTranslate-history-%s.json", time.Now().Format("2006-01-02")),
+		CanCreateDirectories: true,
+		Filters:              []runtime.FileFilter{{DisplayName: "JSON 文件", Pattern: "*.json"}},
+	})
+	if err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(path) == "" {
+		return false, nil
+	}
+	return true, storage.WriteFileAtomic(path, data, 0600)
+}
+
+// CacheStats 缓存运行时统计，供内存监控端点返回。
+type CacheStats struct {
+	Items int `json:"items"`
+	Bytes int `json:"bytes"`
+}
+
+// MemoryStats 内存使用快照，供前端监控与阈值告警使用。
+type MemoryStats struct {
+	AllocBytes         int64      `json:"allocBytes"`         // Go 堆已分配字节数
+	SysBytes           int64      `json:"sysBytes"`           // 从 OS 获取的总内存
+	HeapObjects        uint64     `json:"heapObjects"`        // 堆对象数量
+	NumGC              uint32     `json:"numGC"`              // GC 次数
+	TranslateCache     CacheStats `json:"translateCache"`
+	DetectCache        CacheStats `json:"detectCache"`
+	ActiveTranslations int        `json:"activeTranslations"` // 进行中的翻译请求数
+	ThresholdBytes     int64      `json:"thresholdBytes"`     // 告警阈值
+	ExceedsThreshold   bool       `json:"exceedsThreshold"`   // 是否超阈值
+}
+
+// 内存告警阈值：200MB。桌面翻译应用正常运行时远低于此值，
+// 超过则提示用户重启或清理历史。可在设置面板中展示告警状态。
+const memoryThresholdBytes = 200 << 20
+
+// GetMemoryStats 返回当前内存使用快照，供前端监控面板周期性查询。
+// 注意：runtime.ReadMemStats 会触发短暂 STW，建议调用间隔不低于 5s。
+func (a *App) GetMemoryStats() MemoryStats {
+	var m goruntime.MemStats
+	goruntime.ReadMemStats(&m)
+	active := 0
+	a.activeTranslationsMu.Lock()
+	active = len(a.activeTranslations)
+	a.activeTranslationsMu.Unlock()
+	return MemoryStats{
+		AllocBytes:         int64(m.Alloc),
+		SysBytes:           int64(m.Sys),
+		HeapObjects:        m.HeapObjects,
+		NumGC:              m.NumGC,
+		TranslateCache:     CacheStats{Items: a.translateCache.len(), Bytes: a.translateCache.bytes()},
+		DetectCache:        CacheStats{Items: a.detectCache.len(), Bytes: a.detectCache.bytes()},
+		ActiveTranslations: active,
+		ThresholdBytes:     memoryThresholdBytes,
+		ExceedsThreshold:   int64(m.Alloc) > memoryThresholdBytes,
+	}
+}
+
+// RunGC 主动触发垃圾回收，用于用户在设置中手动清理内存。
+// 清空历史后调用可立即释放历史记录占用的堆内存。
+func (a *App) RunGC() {
+	goruntime.GC()
 }

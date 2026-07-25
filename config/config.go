@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"simpleTranslate/internal/storage"
+	"strings"
 	"sync"
 )
 
@@ -16,12 +17,21 @@ type ServiceConfig struct {
 	Region    string `json:"region"`
 }
 
+// BaiduConfig stores the credentials and translation mode used by Baidu.
+// Domain is "general" or one of the supported field translation domains.
+type BaiduConfig struct {
+	AppID     string `json:"appId"`
+	SecretKey string `json:"secretKey"`
+	Domain    string `json:"domain"`
+}
+
 // CloudConfig 对应整个配置文件的结构（单一数据源，供 main 包与 translate 包共用）
 type CloudConfig struct {
 	Version          int           `json:"version"`
 	Tencent          ServiceConfig `json:"tencent"`
 	Aliyun           ServiceConfig `json:"aliyun"`
-	DefaultEngine    string        `json:"defaultEngine"` // "tencent" 或 "aliyun"
+	Baidu            BaiduConfig   `json:"baidu"`
+	DefaultEngine    string        `json:"defaultEngine"` // tencent / aliyun / baidu
 	IsDark           bool          `json:"isDark"`
 	SidebarCollapsed bool          `json:"sidebarCollapsed"`
 	AutoTranslate    bool          `json:"autoTranslate"`
@@ -34,7 +44,33 @@ type CloudConfig struct {
 	ClipboardWatch bool `json:"clipboardWatch"`
 }
 
-const CurrentVersion = 2
+const CurrentVersion = 3
+
+const BaiduGeneralDomain = "general"
+
+var validBaiduDomains = map[string]struct{}{
+	BaiduGeneralDomain: {},
+	"it":               {},
+	"finance":          {},
+	"machinery":        {},
+	"senimed":          {},
+	"novel":            {},
+	"academic":         {},
+	"aerospace":        {},
+	"wiki":             {},
+	"news":             {},
+	"law":              {},
+	"contract":         {},
+}
+
+// NormalizeBaiduDomain returns the canonical configured domain.
+func NormalizeBaiduDomain(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if _, ok := validBaiduDomains[value]; ok {
+		return value
+	}
+	return BaiduGeneralDomain
+}
 
 // DefaultCloudConfig is also used as the migration base for older files.
 // Unmarshalling on top of it preserves intentional false values while filling
@@ -43,12 +79,13 @@ func DefaultCloudConfig() CloudConfig {
 	return CloudConfig{
 		Version:          CurrentVersion,
 		Aliyun:           ServiceConfig{Region: "cn-hangzhou"},
+		Baidu:            BaiduConfig{Domain: BaiduGeneralDomain},
 		DefaultEngine:    "tencent",
 		IsDark:           true,
 		AutoTranslate:    true,
 		SourceLanguage:   "auto",
 		TargetLanguage:   "zh",
-		CompareEngines:   []string{"tencent", "aliyun"},
+		CompareEngines:   []string{"tencent", "aliyun", "baidu"},
 		ClipboardWatch:   false,
 		SidebarCollapsed: false,
 	}
@@ -56,31 +93,47 @@ func DefaultCloudConfig() CloudConfig {
 
 func normalizeConfig(cfg CloudConfig) CloudConfig {
 	cfg.Version = CurrentVersion
-	if cfg.DefaultEngine != "tencent" && cfg.DefaultEngine != "aliyun" {
+	if cfg.DefaultEngine != "tencent" && cfg.DefaultEngine != "aliyun" && cfg.DefaultEngine != "baidu" {
 		cfg.DefaultEngine = "tencent"
 	}
-	if cfg.SourceLanguage == "" {
-		cfg.SourceLanguage = "auto"
-	}
-	if cfg.TargetLanguage == "" {
-		cfg.TargetLanguage = "zh"
-	}
+	cfg.Baidu.Domain = NormalizeBaiduDomain(cfg.Baidu.Domain)
+	cfg.SourceLanguage = normalizeLanguage(cfg.SourceLanguage, true, "auto")
+	cfg.TargetLanguage = normalizeLanguage(cfg.TargetLanguage, false, "zh")
 	if cfg.Aliyun.Region == "" {
 		cfg.Aliyun.Region = "cn-hangzhou"
 	}
 	seen := map[string]bool{}
 	engines := make([]string, 0, len(cfg.CompareEngines))
 	for _, engine := range cfg.CompareEngines {
-		if (engine == "tencent" || engine == "aliyun") && !seen[engine] {
+		if (engine == "tencent" || engine == "aliyun" || engine == "baidu") && !seen[engine] {
 			engines = append(engines, engine)
 			seen[engine] = true
 		}
 	}
 	if len(engines) == 0 {
-		engines = []string{"tencent", "aliyun"}
+		engines = []string{"tencent", "aliyun", "baidu"}
 	}
 	cfg.CompareEngines = engines
 	return cfg
+}
+
+func normalizeLanguage(value string, allowAuto bool, fallback string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch value {
+	case "ja":
+		value = "jp"
+	case "ko":
+		value = "kr"
+	}
+	if allowAuto && value == "auto" {
+		return value
+	}
+	switch value {
+	case "zh", "en", "jp", "kr", "fr", "de", "ru", "es":
+		return value
+	default:
+		return fallback
+	}
 }
 
 // 进程内配置缓存：避免每次翻译都从磁盘读取，SaveConfig 时同步刷新。

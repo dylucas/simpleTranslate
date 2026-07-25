@@ -20,8 +20,10 @@ export interface Speaker {
 
 export function createSpeaker(getSpeechLang: (code: string) => string): Speaker {
   let speakingText: string | null = null;
+  let activeUtterance: SpeechSynthesisUtterance | null = null;
 
   function stop(): void {
+    activeUtterance = null;
     if (typeof window !== "undefined" && window.speechSynthesis) {
       window.speechSynthesis.cancel();
     }
@@ -42,15 +44,16 @@ export function createSpeaker(getSpeechLang: (code: string) => string): Speaker 
 
     stop();
     const u = new SpeechSynthesisUtterance(text);
+    activeUtterance = u;
     u.lang = getSpeechLang(langCode);
-    u.onend = () => {
+    const finish = () => {
+      if (activeUtterance !== u) return;
+      activeUtterance = null;
       speakingText = null;
       onChange?.(null);
     };
-    u.onerror = () => {
-      speakingText = null;
-      onChange?.(null);
-    };
+    u.onend = finish;
+    u.onerror = finish;
     speakingText = text;
     onChange?.(text);
     window.speechSynthesis.speak(u);

@@ -76,6 +76,22 @@ func TestAliyunEndpoint(t *testing.T) {
 	}
 }
 
+func TestAliyunLanguageCode(t *testing.T) {
+	tests := map[string]string{
+		"jp":   "ja",
+		"JP":   "ja",
+		"kr":   "ko",
+		" KR ": "ko",
+		"zh":   "zh",
+		"en":   "en",
+	}
+	for input, want := range tests {
+		if got := aliyunLanguageCode(input); got != want {
+			t.Errorf("aliyunLanguageCode(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 // TestFlexInt_UnmarshalJSON 验证 flexInt 能兼容字符串和数字两种形式
 func TestFlexInt_UnmarshalJSON(t *testing.T) {
 	cases := []struct {
@@ -176,7 +192,7 @@ func TestValidateTranslateResponse(t *testing.T) {
 	}{
 		{
 			name:   "success",
-			result: APIResponse{StatusCode: 200, Body: ResponseBody{Code: flexInt(200)}},
+			result: APIResponse{StatusCode: 200, Body: ResponseBody{Code: flexInt(200), Data: TranslatedData{Translated: "ok"}}},
 		},
 		{
 			name:    "HTTP error",
@@ -186,6 +202,11 @@ func TestValidateTranslateResponse(t *testing.T) {
 		{
 			name:    "business error",
 			result:  APIResponse{StatusCode: 200, Body: ResponseBody{Code: flexInt(10010), Message: "invalid access key"}},
+			wantErr: true,
+		},
+		{
+			name:    "empty translation",
+			result:  APIResponse{StatusCode: 200, Body: ResponseBody{Code: flexInt(200)}},
 			wantErr: true,
 		},
 	}

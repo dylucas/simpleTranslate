@@ -1,9 +1,19 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"testing"
+
+	"simpleTranslate/translate"
 )
+
+func TestClassifyError_Cancelled(t *testing.T) {
+	te := classifyError("tencent", context.Canceled)
+	if te.Code != ErrCodeCancelled {
+		t.Fatalf("classify(context.Canceled) = %q, want %q", te.Code, ErrCodeCancelled)
+	}
+}
 
 // TestClassifyError_Credentials 各种凭据相关错误应归为 credentials
 func TestClassifyError_Credentials(t *testing.T) {
@@ -91,6 +101,26 @@ func TestClassifyError_InvalidInput(t *testing.T) {
 	te := classifyError("tencent", errors.New("空文本"))
 	if te.Code != ErrCodeInvalidInput {
 		t.Errorf("classify(空文本) = %q, want %q", te.Code, ErrCodeInvalidInput)
+	}
+}
+
+func TestClassifyBaiduErrors(t *testing.T) {
+	for code, want := range map[string]string{
+		"52003": ErrCodeCredentials,
+		"54003": ErrCodeRateLimit,
+		"52001": ErrCodeTimeout,
+		"52002": ErrCodeServiceUnavailable,
+		"54005": ErrCodeRateLimit,
+		"58001": ErrCodeInvalidInput,
+		"99999": ErrCodeUnknown,
+	} {
+		got := classifyError("baidu", &translate.BaiduAPIError{Code: code, Message: "test"})
+		if got.Code != want {
+			t.Errorf("Baidu code %s = %q, want %q", code, got.Code, want)
+		}
+	}
+	if got := classifyError("baidu", errors.New("百度翻译原文不能超过 6000 个 UTF-8 字节")); got.Code != ErrCodeInvalidInput {
+		t.Errorf("oversized Baidu input = %q, want invalid_input", got.Code)
 	}
 }
 

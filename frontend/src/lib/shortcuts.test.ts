@@ -10,6 +10,7 @@ function press(handler: (event: KeyboardEvent) => void, key: string, init: Keybo
 function createHandlers(): Required<ShortcutHandlers> {
   return {
     onTranslate: vi.fn(),
+    onCancel: vi.fn(),
     onFocusInput: vi.fn(),
     onClearInput: vi.fn(),
     onSwapLangs: vi.fn(),
@@ -26,6 +27,7 @@ describe("keyboard shortcuts", () => {
     expect(ARIA_SHORTCUTS.toggleHistory).toBe("Control+Shift+H Meta+Shift+H");
     expect(ARIA_SHORTCUTS.toggleSettings).toBe("Control+, Meta+,");
     expect(ARIA_SHORTCUTS.closePanel).toBe("Escape");
+    expect(ARIA_SHORTCUTS.cancelTranslation).toBe("Escape");
   });
 
   it("dispatches the supported Ctrl/Cmd shortcuts", () => {
@@ -42,6 +44,7 @@ describe("keyboard shortcuts", () => {
     press(shortcut, "Escape");
 
     expect(handlers.onTranslate).toHaveBeenCalledOnce();
+    expect(handlers.onCancel).toHaveBeenCalledOnce();
     expect(handlers.onFocusInput).toHaveBeenCalledOnce();
     expect(handlers.onClearInput).toHaveBeenCalledOnce();
     expect(handlers.onSwapLangs).toHaveBeenCalledOnce();
@@ -80,6 +83,7 @@ describe("keyboard shortcuts", () => {
     press(shortcut, "Escape");
 
     expect(handlers.onTranslate).not.toHaveBeenCalled();
+    expect(handlers.onCancel).not.toHaveBeenCalled();
     expect(handlers.onClearInput).not.toHaveBeenCalled();
     expect(handlers.onSwapLangs).not.toHaveBeenCalled();
     expect(handlers.onFocusInput).toHaveBeenCalledOnce();

@@ -3,17 +3,25 @@
   import { tick } from "svelte";
   import { langs } from "./languages";
   import { ARIA_SHORTCUTS } from "./shortcuts";
-  import type { HistoryEntry } from "./types";
+  import type { HistoryEntry, HistoryPage, HistoryQuery } from "./types";
 
   interface Props {
     open: boolean;
-    history: HistoryEntry[];
+    queryHistory: (query: HistoryQuery) => Promise<HistoryPage>;
     onClose: () => void;
-    onClear: () => void;
+    onClear: () => Promise<void>;
+    onExport: () => Promise<boolean>;
+    onError: (message: string) => void;
     onSelect: (entry: HistoryEntry) => void;
   }
 
-  let { open, history, onClose, onClear, onSelect }: Props = $props();
+  let { open, queryHistory, onClose, onClear, onExport, onError, onSelect }: Props = $props();
+  const PAGE_SIZE = 10;
+  const SEARCH_DELAY = 250;
+  let entries = $state<HistoryEntry[]>([]);
+  let total = $state(0);
+  let hasMore = $state(false);
+  let loading = $state(false);
   let search = $state("");
   let confirming = $state(false);
   let drawer = $state<HTMLElement>();
@@ -21,23 +29,62 @@
   let clearHistoryButton = $state<HTMLButtonElement>();
   let cancelClearButton = $state<HTMLButtonElement>();
   let wasOpen = false;
-  let filtered = $derived.by(() => {
-    const query = search.trim().toLowerCase();
-    return query
-      ? history.filter((item) => item.input.toLowerCase().includes(query) || item.output.toLowerCase().includes(query))
-      : history;
-  });
-  let resultSummary = $derived(search.trim() ? `${filtered.length} / ${history.length} 条记录` : `${history.length} 条记录`);
+  let requestSequence = 0;
+  let searchTimer: ReturnType<typeof setTimeout> | null = null;
+  let observedSearch = "";
+  let resultSummary = $derived(search.trim() ? `${total} 条匹配记录` : `${total} 条记录`);
+
+  async function loadPage(reset: boolean): Promise<void> {
+    if (!open || loading && !reset) return;
+    const requestId = ++requestSequence;
+    loading = true;
+    try {
+      const page = await queryHistory({ query: search.trim(), offset: reset ? 0 : entries.length, limit: PAGE_SIZE });
+      if (requestId !== requestSequence || !open) return;
+      entries = reset ? page.entries : [...entries, ...page.entries];
+      total = page.total;
+      hasMore = page.hasMore;
+    } catch {
+      if (requestId === requestSequence) onError("历史记录加载失败");
+    } finally {
+      if (requestId === requestSequence) loading = false;
+    }
+  }
+
+  function releaseEntries(): void {
+    requestSequence += 1;
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = null;
+    observedSearch = "";
+    entries = [];
+    total = 0;
+    hasMore = false;
+    loading = false;
+  }
 
   $effect(() => {
     if (open && !wasOpen) {
       wasOpen = true;
+      void loadPage(true);
       void tick().then(() => searchInput?.focus());
     } else if (!open) {
       wasOpen = false;
       confirming = false;
       search = "";
+      releaseEntries();
     }
+  });
+
+  $effect(() => {
+    const query = search;
+    if (!open || !wasOpen) return;
+    if (query === observedSearch) return;
+    observedSearch = query;
+    if (searchTimer) clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      searchTimer = null;
+      if (query === search) void loadPage(true);
+    }, SEARCH_DELAY);
   });
 
   $effect(() => {
@@ -61,10 +108,17 @@
     void tick().then(() => clearHistoryButton?.focus());
   }
 
-  function confirmClear(): void {
-    onClear();
-    confirming = false;
-    void tick().then(() => searchInput?.focus());
+  async function confirmClear(): Promise<void> {
+    try {
+      await onClear();
+      entries = [];
+      total = 0;
+      hasMore = false;
+      confirming = false;
+      void tick().then(() => searchInput?.focus());
+    } catch {
+      onError("历史记录清空失败");
+    }
   }
 
   function handleKeydown(event: KeyboardEvent): void {
@@ -89,15 +143,18 @@
     }
   }
 
-  function exportHistory(): void {
-    if (!history.length) return;
-    const blob = new Blob([JSON.stringify(history, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `simpleTranslate-history-${new Date().toISOString().slice(0, 10)}.json`;
-    anchor.click();
-    URL.revokeObjectURL(url);
+  async function exportHistory(): Promise<void> {
+    if (!total) return;
+    try {
+      await onExport();
+    } catch {
+      onError("历史记录导出失败");
+    }
+  }
+
+  function handleScroll(event: Event): void {
+    const element = event.currentTarget as HTMLElement;
+    if (hasMore && !loading && element.scrollTop + element.clientHeight >= element.scrollHeight - 40) void loadPage(false);
   }
 </script>
 
@@ -107,8 +164,8 @@
     <header>
       <div class="title"><span><HistoryIcon size={18} /></span><div><h2 id="history-title">历史记录</h2><small aria-live="polite" aria-atomic="true">{resultSummary}</small></div></div>
       <div class="header-actions">
-        <button onclick={exportHistory} disabled={!history.length} aria-label="导出历史记录" title="导出 JSON"><Download size={16} /></button>
-        <button bind:this={clearHistoryButton} class="danger" onclick={() => (confirming = true)} disabled={!history.length} aria-label="清空历史记录" title="清空历史"><Trash2 size={16} /></button>
+        <button onclick={() => void exportHistory()} disabled={!total} aria-label="导出历史记录" title="导出 JSON"><Download size={16} /></button>
+        <button bind:this={clearHistoryButton} class="danger" onclick={() => (confirming = true)} disabled={!total} aria-label="清空历史记录" title="清空历史"><Trash2 size={16} /></button>
         <button onclick={close} aria-label="关闭历史记录" aria-keyshortcuts={ARIA_SHORTCUTS.closePanel} title="关闭"><X size={18} /></button>
       </div>
     </header>
@@ -124,13 +181,13 @@
         <div class="confirm-message"><AlertTriangle size={15} /><span>确定清空全部历史记录？</span></div>
         <div class="confirm-actions">
           <button bind:this={cancelClearButton} onclick={cancelClear}>取消</button>
-          <button class="danger-solid" onclick={confirmClear}>确认清空</button>
+          <button class="danger-solid" onclick={() => void confirmClear()}>确认清空</button>
         </div>
       </div>
     {/if}
 
-    <div class="history-list">
-      {#each filtered as item (item.id)}
+    <div class="history-list" onscroll={handleScroll}>
+      {#each entries as item (item)}
         <button class="history-item" onclick={() => onSelect(item)}>
           <span class="meta"><span class="route"><span>{languageLabel(item.source)}</span><ArrowRight size={11} /><span>{languageLabel(item.target)}</span></span><time>{item.time}</time></span>
           <span class="entry-content"><strong>{item.input}</strong><span class="output">{item.output}</span></span>
@@ -138,10 +195,11 @@
       {:else}
         <div class="empty" role="status">
           <span class="empty-icon">{#if search}<Search size={22} strokeWidth={1.4} />{:else}<HistoryIcon size={24} strokeWidth={1.3} />{/if}</span>
-          <strong>{search ? "没有匹配记录" : "暂无翻译记录"}</strong>
+          <strong>{loading ? "正在加载" : search ? "没有匹配记录" : "暂无翻译记录"}</strong>
           {#if search}<button class="empty-action" onclick={() => { search = ""; searchInput?.focus(); }}>清除搜索</button>{/if}
         </div>
       {/each}
+      {#if hasMore}<button class="load-more" onclick={() => void loadPage(false)} disabled={loading}>{loading ? "加载中…" : "加载更多"}</button>{/if}
     </div>
   </div>
 {/if}
@@ -191,6 +249,7 @@
   .empty-icon { display: grid; width: 44px; height: 44px; margin-bottom: var(--sp-1); place-items: center; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-surface); color: var(--text-sec); }
   .empty strong { color: var(--text-sec); font-size: var(--fs-sm); font-weight: var(--fw-medium); }
   .empty-action { min-height: 30px; margin-top: var(--sp-1); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 0 var(--sp-3); color: var(--primary); }
+  .load-more { min-height: 34px; flex: 0 0 auto; border: 1px solid var(--border); border-radius: var(--radius-md); color: var(--primary); }
   @media (min-width: 1180px) {
     .backdrop { right: var(--history-drawer-w, 440px); background: transparent; }
     .drawer { box-shadow: -8px 0 24px rgba(0, 0, 0, .18); }

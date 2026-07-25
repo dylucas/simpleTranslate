@@ -2,10 +2,11 @@ package translate
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"time"
 
@@ -18,6 +19,12 @@ const hunyuanModel = "hy-mt2-pro"
 
 // httpClient 复用连接；30s 超时兼顾响应速度与稳定性
 var httpClient = &http.Client{Timeout: 30 * time.Second}
+
+// URLs are language-neutral tokens, but the model can let their Latin host,
+// protocol, and port characters influence language detection. Remove them
+// from the detection sample while leaving the original text untouched for
+// translation.
+var languageDetectionURLPattern = regexp.MustCompile(`(?i)(?:https?://|ftp://|www\.)[^\s<>"'，。！？；：、]+`)
 
 // langCodeToName 将应用内部语种代码映射为 hy-mt2-pro 期望的中文目标语种名
 var langCodeToName = map[string]string{
@@ -70,10 +77,18 @@ func chatCompletion(prompt string) (string, error) {
 }
 
 func chatCompletionWithConfig(prompt string, service config.ServiceConfig) (string, error) {
-	return chatCompletionWithAPIKey(prompt, strings.TrimSpace(service.SecretKey))
+	return chatCompletionWithConfigContext(context.Background(), prompt, service)
 }
 
 func chatCompletionWithAPIKey(prompt, apiKey string) (string, error) {
+	return chatCompletionWithAPIKeyContext(context.Background(), prompt, apiKey)
+}
+
+func chatCompletionWithConfigContext(ctx context.Context, prompt string, service config.ServiceConfig) (string, error) {
+	return chatCompletionWithAPIKeyContext(ctx, prompt, strings.TrimSpace(service.SecretKey))
+}
+
+func chatCompletionWithAPIKeyContext(ctx context.Context, prompt, apiKey string) (string, error) {
 	if apiKey == "" {
 		return "", fmt.Errorf("未配置腾讯混元 API Key，请在设置中填写")
 	}
@@ -86,7 +101,7 @@ func chatCompletionWithAPIKey(prompt, apiKey string) (string, error) {
 	}
 	payload, _ := json.Marshal(body)
 
-	req, err := http.NewRequest("POST", hunyuanEndpoint, bytes.NewBuffer(payload))
+	req, err := http.NewRequestWithContext(ctx, "POST", hunyuanEndpoint, bytes.NewBuffer(payload))
 	if err != nil {
 		return "", err
 	}
@@ -99,7 +114,10 @@ func chatCompletionWithAPIKey(prompt, apiKey string) (string, error) {
 	}
 	defer resp.Body.Close()
 
-	data, _ := io.ReadAll(resp.Body)
+	data, err := readAPIResponse(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("读取混元 API 响应失败: %w", err)
+	}
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("混元 API 调用失败: HTTP %d: %s", resp.StatusCode, string(data))
 	}
@@ -161,25 +179,53 @@ func DetectLanguage(text string) (string, error) {
 }
 
 func DetectLanguageWithConfig(text string, service config.ServiceConfig) (string, error) {
-	return detectLanguage(text, func(prompt string) (string, error) {
-		return chatCompletionWithConfig(prompt, service)
+	return DetectLanguageWithContext(context.Background(), text, service)
+}
+
+func DetectLanguageWithContext(ctx context.Context, text string, service config.ServiceConfig) (string, error) {
+	return detectLanguageWithContext(ctx, text, func(callCtx context.Context, prompt string) (string, error) {
+		return chatCompletionWithConfigContext(callCtx, prompt, service)
 	})
 }
 
 func detectLanguage(text string, complete func(string) (string, error)) (string, error) {
+	return detectLanguageWithContext(context.Background(), text, func(_ context.Context, prompt string) (string, error) {
+		return complete(prompt)
+	})
+}
+
+func detectLanguageWithContext(ctx context.Context, text string, complete func(context.Context, string) (string, error)) (string, error) {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return "", fmt.Errorf("空文本")
 	}
+	detectionText := languageDetectionURLPattern.ReplaceAllString(text, " ")
+	if strings.TrimSpace(detectionText) == "" {
+		// Keep URL-only input valid for the remote detector. There is no natural
+		// language to infer, but sending an empty sample would be rejected here.
+		detectionText = text
+	}
 	prompt := fmt.Sprintf(
-		"请只回复以下文本对应的语言代码（只能从 zh/en/jp/kr/fr/de/ru/es 中选择一个，不要输出任何其他内容、不要标点）：\n%s",
-		text,
+		"请判断以下文本中自然语言主体的语言，忽略 URL/链接、代码、变量名、数字和标点；若有多种语言，以占主要内容的语言为准。只回复语言代码（只能从 zh/en/jp/kr/fr/de/ru/es 中选择一个，不要输出任何其他内容、不要标点）：\n%s",
+		detectionText,
 	)
-	out, err := complete(prompt)
+	out, err := complete(ctx, prompt)
 	if err != nil {
 		return "", err
 	}
-	return normalizeLangCode(out), nil
+	lang, err := validateDetectedLanguage(out)
+	if err != nil {
+		return "", err
+	}
+	return lang, nil
+}
+
+func validateDetectedLanguage(raw string) (string, error) {
+	lang := normalizeLangCode(raw)
+	if _, ok := langCodeToName[lang]; !ok {
+		return "", fmt.Errorf("不支持的语言识别结果: %q", strings.TrimSpace(raw))
+	}
+	return lang, nil
 }
 
 // Translate 使用 hy-mt2-pro 翻译
@@ -189,12 +235,22 @@ func Translate(text, source, target string) (string, error) {
 }
 
 func TranslateWithConfig(text, source, target string, service config.ServiceConfig) (string, error) {
-	return translateText(text, source, target, func(prompt string) (string, error) {
-		return chatCompletionWithConfig(prompt, service)
+	return TranslateWithContext(context.Background(), text, source, target, service)
+}
+
+func TranslateWithContext(ctx context.Context, text, source, target string, service config.ServiceConfig) (string, error) {
+	return translateTextWithContext(ctx, text, source, target, func(callCtx context.Context, prompt string) (string, error) {
+		return chatCompletionWithConfigContext(callCtx, prompt, service)
 	})
 }
 
 func translateText(text, source, target string, complete func(string) (string, error)) (string, error) {
+	return translateTextWithContext(context.Background(), text, source, target, func(_ context.Context, prompt string) (string, error) {
+		return complete(prompt)
+	})
+}
+
+func translateTextWithContext(ctx context.Context, text, source, target string, complete func(context.Context, string) (string, error)) (string, error) {
 	targetName, ok := langCodeToName[target]
 	if !ok {
 		targetName = target
@@ -203,5 +259,13 @@ func translateText(text, source, target string, complete func(string) (string, e
 		"将以下文本翻译为 %s，注意只需要输出翻译后的结果，不要额外解释：\n%s",
 		targetName, text,
 	)
-	return complete(prompt)
+	result, err := complete(ctx, prompt)
+	if err != nil {
+		return "", err
+	}
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return "", fmt.Errorf("混元 API 返回空译文")
+	}
+	return result, nil
 }

@@ -2,25 +2,27 @@
 
 一个干净清爽的翻译工具
 
-![alt text](./.github/screenshots/image.png)
-![alt text](./.github/screenshots/image-1.png)
+![alt text](.github/screenshots/ScreenShot_2026-07-25_115835_725.png)
 
 ## 简介
 
-SimpleTranslate 是一个基于 Wails 框架开发的桌面翻译应用。后端使用 Go 语言，前端使用 Svelte 框架，提供简洁高效的翻译体验。支持腾讯云和阿里云的翻译服务，能够自动检测语言并进行实时翻译。
+SimpleTranslate 是一个基于 Wails 框架开发的桌面翻译应用。后端使用 Go 语言，前端使用 Svelte 5 框架，提供简洁高效的翻译体验。支持腾讯混元、阿里云和百度翻译，能够自动检测语言并进行实时翻译。
 
 ## 功能特性
 
-- **多云服务支持**：集成腾讯云翻译和阿里云翻译服务
+- **多云服务支持**：集成腾讯混元、阿里云机器翻译和百度翻译
+- **百度领域翻译**：支持信息技术、金融财经、机械制造、生物医药、网络文学、学术论文、航空航天、人文社科、新闻资讯、法律法规和合同领域
 - **多引擎对比模式**：同一文本并发调用多个引擎，并排展示结果便于择优（单引擎超时 30s 不阻塞整体）
 - **自动语言检测**：支持自动识别源语言，跨引擎 best-effort 兜底
 - **实时翻译**：输入文本后即时显示翻译结果（700ms 防抖自动翻译，可开关）
+- **请求可取消**：翻译过程中可立即取消；自动翻译始终以最新输入为准
 - **剪贴板监听**：开启后自动翻译复制的内容（1.5s 轮询，过滤超长文本）
 - **结果再翻译**：一键将当前译文作为新输入并交换源/目标语言
 - **语音朗读**：基于浏览器 SpeechSynthesis 朗读原文与译文
+- **结构化错误**：后端返回 `errorCode` 类别（凭据 / 网络 / 超时 / 限流 / 取消等），前端按类别差异化提示与重试
 - **连接测试**：在设置中用最小请求验证凭据是否可用
 - **多语言支持**：支持中文、英文、日语、韩语、法语、德语、俄语、西班牙语等
-- **历史记录**：本地持久化保存（上限 200 条，防抖写盘），便于回顾
+- **历史记录**：本地持久化保存（上限 200 条，按需每页加载 10 条），支持搜索、清空与 JSON 导出
 - **配置管理**：用户友好的设置界面，支持暗色 / 浅色模式与侧边栏折叠
 - **跨平台**：支持 Windows、macOS 和 Linux
 
@@ -71,7 +73,7 @@ SimpleTranslate 是一个基于 Wails 框架开发的桌面翻译应用。后端
 
 2. 配置 API 密钥：
    - 打开设置界面
-   - 输入腾讯云或阿里云的 SecretId 和 SecretKey
+   - 输入所选服务的凭据；百度翻译需要 APP ID 和密钥
    - 设置默认翻译引擎，可点击「测试连接」验证凭据
 
 3. 开始翻译：
@@ -84,6 +86,7 @@ SimpleTranslate 是一个基于 Wails 框架开发的桌面翻译应用。后端
    - **剪贴板监听**：开启后自动翻译复制内容，无需手动粘贴
    - **结果再翻译**：点击译文上的「再翻译」按钮，把译文作为新输入并交换语言
    - **语音朗读**：点击文本旁的喇叭图标朗读原文 / 译文
+   - **历史导出**：在历史面板点击导出按钮，将完整记录保存为 JSON 文件
 
    ### 快捷键
 
@@ -94,7 +97,7 @@ SimpleTranslate 是一个基于 Wails 框架开发的桌面翻译应用。后端
    - **Ctrl/Cmd + Shift + H**: 打开 / 关闭历史记录面板
    - **Ctrl/Cmd + ,**: 打开 / 关闭偏好设置
    - **Ctrl/Cmd + M**: 切换深色 / 浅色主题
-   - **Esc**: 关闭弹窗 / 面板
+   - **Esc**: 优先关闭弹窗 / 面板；无面板时取消正在进行的翻译
 
    > 在 macOS 上使用 `Cmd` (⌘) 作为修饰键，其余平台使用 `Ctrl`。
 
@@ -118,26 +121,75 @@ SimpleTranslate 是一个基于 Wails 框架开发的桌面翻译应用。后端
 
 ```
 simpleTranslate/
-├── app.go              # 主应用逻辑（翻译、多引擎并发、历史、连接测试）
-├── main.go             # 应用入口
-├── config.go           # 配置相关方法（包装 config 包供前端调用）
-├── translate/          # 翻译服务包
-│   ├── aliyun.go       # 阿里云翻译实现
-│   └── tencent.go      # 腾讯云翻译实现
-├── config/             # 配置工具包（含进程内缓存）
-├── frontend/           # 前端代码
+├── app.go                       # 主应用逻辑（翻译、多引擎并发、历史、连接测试）
+├── main.go                      # 应用入口
+├── config.go                    # 配置相关方法（包装 config 包供前端调用）
+├── cache.go                     # LRU 缓存（翻译结果与语种识别结果）
+├── errors.go                    # 结构化翻译错误（errorCode 分类与归类）
+├── platform_darwin.go           # macOS 平台编译补丁（Wails 原生对话框依赖）
+├── translate/                   # 翻译服务包
+│   ├── aliyun.go                # 阿里云翻译实现
+│   ├── baidu.go                 # 百度通用、语种识别和领域翻译实现
+│   ├── tencent.go               # 腾讯云翻译实现
+│   ├── response.go              # HTTP 响应读取与错误归一化
+│   └── *_test.go                # 单元测试与百度实时探针
+├── config/                      # 配置工具包（含进程内缓存）
+│   ├── config.go
+│   └── config_test.go
+├── internal/                    # 内部工具包
+│   └── storage/
+│       └── atomic.go           # 原子文件写入（临时文件 + rename）
+├── frontend/                    # 前端代码
 │   ├── src/
-│   │   ├── App.svelte      # 主 UI 组件
+│   │   ├── App.svelte           # 主 UI 组件
 │   │   └── lib/
-│   │       ├── Config.svelte          # 设置草稿与连接测试
-│   │       ├── History.svelte         # 历史记录抽屉
-│   │       ├── bridge.ts              # Wails / 浏览器 Mock 桥接
-│   │       ├── configController.ts    # 串行配置持久化与回滚
-│   │       └── translateController.ts # 翻译请求与状态控制
-│   ├── DESIGN_SYSTEM.md  # 设计系统规范文档
+│   │       ├── CommandBar.svelte          # 引擎切换与语言对选择
+│   │       ├── ComparePanel.svelte        # 多引擎并排结果面板
+│   │       ├── Config.svelte              # 设置草稿与连接测试
+│   │       ├── ErrorToast.svelte          # 错误提示与重试入口
+│   │       ├── History.svelte             # 历史记录抽屉（搜索 / 清空 / 导出）
+│   │       ├── StatusBar.svelte           # 字节计数与状态显示
+│   │       ├── UtilityRail.svelte         # 侧边工具栏
+│   │       ├── baiduDomains.ts            # 百度领域选项
+│   │       ├── bridge.ts                  # Wails / 浏览器 Mock 桥接
+│   │       ├── clipboard.ts              # 剪贴板轮询监听
+│   │       ├── configController.ts        # 串行配置持久化与回滚
+│   │       ├── engines.ts                 # 引擎元数据与配置校验
+│   │       ├── errors.ts                  # 前端错误归类与提示
+│   │       ├── history.ts                 # 历史记录工具函数
+│   │       ├── languages.ts               # 语种映射与语音标签
+│   │       ├── shortcuts.ts               # 全局快捷键
+│   │       ├── speech.ts                  # 语音朗读封装
+│   │       ├── textLimits.ts              # UTF-8 字节上限与截断
+│   │       ├── translateController.ts     # 翻译请求与状态控制
+│   │       └── types.ts                   # 共享类型定义
+│   ├── e2e/                     # Playwright 端到端测试
+│   ├── DESIGN_SYSTEM.md         # 设计系统规范文档
 │   └── package.json
-├── build/              # 构建相关文件
-└── wails.json          # Wails 配置
+├── build/                       # 构建相关文件
+└── wails.json                   # Wails 配置
+```
+
+### 测试
+
+后端单元测试：
+
+```bash
+go test ./...
+```
+
+前端单元测试（Vitest）：
+
+```bash
+cd frontend
+npm test
+```
+
+端到端测试（Playwright）：
+
+```bash
+cd frontend
+npm run test:e2e
 ```
 
 ## 构建
@@ -170,14 +222,28 @@ wails build -clean -o simpleTranslate-mac-arm64 -platform darwin/arm64
 
 应用配置存储在用户主目录下的 `.simple_translate/config.json` 文件中（0600 权限，进程内缓存避免频繁读盘），包括：
 
-- 云服务 API 密钥（腾讯云 / 阿里云的 SecretId、SecretKey、Region）
-- 默认翻译引擎（`tencent` / `aliyun`）
+- 云服务 API 密钥（包括百度 APP ID、密钥和领域设置）
+- 默认翻译引擎（`tencent` / `aliyun` / `baidu`）
 - 多引擎对比设置（`compareMode`、`compareEngines`）
 - 剪贴板监听开关（`clipboardWatch`）
 - UI 设置（暗色模式、侧边栏折叠状态等）
 - 自动翻译开关与最近使用的源语言 / 目标语言
 
-历史记录独立存储于同目录的 `history.json`，上限 200 条。
+历史记录独立存储于同目录的 `history.json`，上限 200 条，通过 `internal/storage` 包原子写入。
+
+为控制长时间运行时的内存占用，原文统一限制为 6000 个 UTF-8 字节；翻译缓存使用固定摘要键和总字节预算，历史记录仅在打开抽屉时分页载入。
+
+### 百度翻译
+
+在百度翻译开放平台开通服务后，在偏好设置中填写 APP ID 和密钥，并选择通用或领域模式。网络文学和人文社科领域仅支持中译英，其他领域支持中英双向；不支持的语种方向会自动使用百度通用翻译，并在结果中显示回退提示。远端领域服务报错时不会静默回退。
+
+百度翻译请求由应用统一串行调度，相邻请求至少间隔 1 秒，避免触发 QPS 限制。APP ID 和密钥只保存在本机 `.simple_translate/config.json`，配置文件权限为 `0600`，不会写入源码或历史记录。
+
+百度实时探针默认跳过。需要验证真实服务时，仅向测试进程注入凭据：
+
+```bash
+BAIDU_LIVE_TEST=1 BAIDU_APP_ID=... BAIDU_SECRET_KEY=... go test ./translate -run TestBaiduLiveAPIs
+```
 
 UI 设计规范参见 [frontend/DESIGN_SYSTEM.md](frontend/DESIGN_SYSTEM.md)。
 
@@ -200,3 +266,4 @@ UI 设计规范参见 [frontend/DESIGN_SYSTEM.md](frontend/DESIGN_SYSTEM.md)。
 - [Wails](https://wails.io/) - 桌面应用框架
 - [腾讯云翻译](https://cloud.tencent.com/product/tmt) - 翻译服务
 - [阿里云翻译](https://www.aliyun.com/product/ai/alimt) - 翻译服务
+- [百度翻译](https://fanyi-api.baidu.com/) - 翻译服务

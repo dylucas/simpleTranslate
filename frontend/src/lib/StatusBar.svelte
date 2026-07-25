@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { EngineId } from "./types";
   import { langs } from "./languages";
+  import { engineLabel as getEngineLabel } from "./engines";
 
   interface Props {
     status: string;
@@ -13,7 +14,7 @@
   let { status, bridgeKind, source, target, activeEngine, compareMode }: Props = $props();
   let statusClass = $derived(status === "翻译中..." ? "processing" : status.includes("失败") ? "error" : "done");
   let routeLabel = $derived(`${source === "auto" ? "自动识别" : (langs[source] ?? source)} → ${langs[target] ?? target}`);
-  let engineLabel = $derived(compareMode ? "多引擎对照" : activeEngine === "tencent" ? "腾讯混元" : "阿里云 MT");
+  let engineLabel = $derived(compareMode ? "多引擎对照" : getEngineLabel(activeEngine, true));
 </script>
 
 <footer class="status-bar">

@@ -3,12 +3,14 @@
   import { onDestroy, onMount, tick } from "svelte";
   import { desktopBridge } from "./lib/bridge";
   import { createClipboardWatcher } from "./lib/clipboard";
-  import { createConfigController } from "./lib/configController";
+  import { createConfigController, normalizeConfig } from "./lib/configController";
+  import { engineLabel, isEngineConfigured } from "./lib/engines";
   import { langs, getSpeechLang } from "./lib/languages";
   import { ARIA_SHORTCUTS, createShortcutHandler } from "./lib/shortcuts";
   import { createSpeaker } from "./lib/speech";
   import { createTranslateController, type TranslateController } from "./lib/translateController";
-  import type { EngineId, HistoryEntry } from "./lib/types";
+  import { MAX_INPUT_BYTES, truncateUtf8, utf8ByteLength } from "./lib/textLimits";
+  import type { BaiduDomain, EngineId, HistoryEntry } from "./lib/types";
   import ComparePanel from "./lib/ComparePanel.svelte";
   import Config from "./lib/Config.svelte";
   import ErrorToast from "./lib/ErrorToast.svelte";
@@ -22,13 +24,12 @@
   let target = $state("zh");
   let showConfig = $state(false);
   let showHistory = $state(false);
-  let history = $state<HistoryEntry[]>([]);
   let suppressAuto = $state(false);
+  let skipAutoForInput: string | null = null;
   let copied = $state(false);
   let copiedEngines = $state<Partial<Record<EngineId, boolean>>>({});
   let speakingText = $state<string | null>(null);
   let inputElement: HTMLTextAreaElement;
-  let historySaveTimer: ReturnType<typeof setTimeout> | null = null;
   let lastPanelTrigger: HTMLElement | null = null;
   let queuedErrors: string[] = [];
   let controller: TranslateController;
@@ -38,12 +39,17 @@
     else queuedErrors.push(message);
   });
   let config = $derived($configController.value);
+  let configReady = $derived($configController.ready);
 
-  function scheduleHistorySave(): void {
-    if (historySaveTimer) clearTimeout(historySaveTimer);
-    historySaveTimer = setTimeout(() => {
-      void desktopBridge.saveHistory(history).catch(() => controller.showError("历史记录保存失败"));
-    }, 400);
+  $effect(() => {
+    if (!configReady) return;
+    source = config.sourceLanguage;
+    target = config.targetLanguage;
+  });
+
+  function persistConfig(operation: Promise<void>): void {
+    // The controller already rolls back and reports failures through onError.
+    void operation.catch(() => undefined);
   }
 
   controller = createTranslateController({
@@ -52,26 +58,22 @@
     getSource: () => source,
     getTarget: () => target,
     getActiveEngine: () => config.defaultEngine,
+    getBaiduDomain: () => config.baidu.domain,
     getCompareMode: () => config.compareMode,
     getCompareEngines: () => availableCompareEngines,
-    getHistory: () => history,
-    setHistory: (update) => {
-      history = update(history);
-      scheduleHistorySave();
-    },
+    appendHistory: (entry) => desktopBridge.appendHistory(entry),
     setTarget: (next) => {
       if (target === next) return;
+      skipAutoForInput = input;
       target = next;
-      void configController.patch("targetLanguage", next);
+      persistConfig(configController.patch("targetLanguage", next));
     },
   });
   const translationState = controller.state;
   let translation = $derived($translationState);
 
   function isConfigured(engine: EngineId): boolean {
-    return engine === "tencent"
-      ? Boolean(config.tencent.secretKey.trim())
-      : Boolean(config.aliyun.secretId.trim() && config.aliyun.secretKey.trim());
+    return isEngineConfigured(config, engine);
   }
 
   let availableCompareEngines = $derived(config.compareEngines.filter(isConfigured));
@@ -79,18 +81,21 @@
   let credentialsReady = $derived(config.compareMode
     ? availableCompareEngines.length > 0
     : isConfigured(config.defaultEngine));
-  let canTranslate = $derived(Boolean(input.trim()) && credentialsReady);
+  let inputBytes = $derived(utf8ByteLength(input));
+  let canTranslate = $derived(Boolean(input.trim()) && inputBytes <= MAX_INPUT_BYTES && credentialsReady);
   let unavailableReason = $derived(!input.trim()
     ? "请输入文本"
+    : inputBytes > MAX_INPUT_BYTES
+      ? `原文不能超过 ${MAX_INPUT_BYTES} 个 UTF-8 字节`
     : !credentialsReady
       ? "请先配置翻译凭据"
       : "");
   let credentialMessage = $derived.by(() => {
     if (!config.compareMode && !isConfigured(config.defaultEngine)) {
-      return `${config.defaultEngine === "tencent" ? "腾讯混元" : "阿里云"}尚未配置凭据`;
+      return `${engineLabel(config.defaultEngine, true)}尚未配置凭据`;
     }
     if (config.compareMode && missingCompareEngines.length) {
-      const names = missingCompareEngines.map((engine) => engine === "tencent" ? "混元" : "阿里云").join("、");
+      const names = missingCompareEngines.map((engine) => engineLabel(engine)).join("、");
       return availableCompareEngines.length ? `${names}未配置，将仅使用可用引擎` : "所选对照引擎均未配置凭据";
     }
     return "";
@@ -117,12 +122,22 @@
 
   $effect(() => {
     const value = input;
-    if (config.autoTranslate && !suppressAuto && credentialsReady) {
+    const domain = config.defaultEngine === "baidu" || (config.compareMode && availableCompareEngines.includes("baidu"))
+      ? config.baidu.domain
+      : "";
+    const route = `${source}\u0000${target}\u0000${domain}`;
+    if (skipAutoForInput === value) {
+      controller.cancelAutoTranslate();
+      skipAutoForInput = null;
+    } else if (route && config.autoTranslate && !suppressAuto && credentialsReady) {
       controller.handleAutoTranslate(value);
+    } else {
+      controller.cancelAutoTranslate();
     }
   });
 
   function openPanel(panel: "config" | "history"): void {
+    if (panel === "config" && !configReady) return;
     lastPanelTrigger = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     showConfig = panel === "config";
     showHistory = panel === "history";
@@ -135,6 +150,10 @@
   }
 
   function requestTranslation(): void {
+    if (translation.isProcessing) {
+      controller.cancel();
+      return;
+    }
     if (!credentialsReady) {
       controller.showError({ errorCode: "credentials", error: "请先配置可用的翻译凭据" });
       return;
@@ -145,17 +164,25 @@
   function setLanguage(kind: "source" | "target", value: string): void {
     if (kind === "source") source = value;
     else target = value;
-    void configController.patch(kind === "source" ? "sourceLanguage" : "targetLanguage", value);
+    persistConfig(configController.patch(kind === "source" ? "sourceLanguage" : "targetLanguage", value));
+  }
+
+  function setBaiduDomain(domain: BaiduDomain): void {
+    if (domain === config.baidu.domain) return;
+    const next = configController.snapshot();
+    next.baidu = { ...next.baidu, domain };
+    persistConfig(configController.save(next));
   }
 
   function swapLanguages(): void {
+    if (!configReady) return;
     const resolved = source === "auto" ? translation.lastDetectedLang : source;
     if (!resolved) return;
     const nextSource = target;
     const nextTarget = resolved;
     source = nextSource;
     target = nextTarget;
-    void configController.save({ ...configController.snapshot(), sourceLanguage: nextSource, targetLanguage: nextTarget });
+    persistConfig(configController.save({ ...configController.snapshot(), sourceLanguage: nextSource, targetLanguage: nextTarget }));
   }
 
   function toggleCompareEngine(engine: EngineId): void {
@@ -163,7 +190,7 @@
     const next = selected.includes(engine)
       ? selected.length === 1 ? selected : selected.filter((item) => item !== engine)
       : [...selected, engine];
-    void configController.patch("compareEngines", next);
+    persistConfig(configController.patch("compareEngines", next));
   }
 
   function speak(text: string, language: string): void {
@@ -173,7 +200,8 @@
   async function copyText(text: string, engine?: EngineId): Promise<void> {
     if (!text) return;
     try {
-      await navigator.clipboard.writeText(text);
+      await desktopBridge.setClipboardText(text);
+      clipboardWatcher.setBaseline(text);
       if (engine) copiedEngines[engine] = true;
       else copied = true;
       setTimeout(() => {
@@ -195,7 +223,7 @@
     controller.setOutput("");
     source = nextSource;
     target = nextTarget;
-    void configController.save({ ...configController.snapshot(), sourceLanguage: nextSource, targetLanguage: nextTarget });
+    persistConfig(configController.save({ ...configController.snapshot(), sourceLanguage: nextSource, targetLanguage: nextTarget }));
     setTimeout(() => {
       suppressAuto = false;
       requestTranslation();
@@ -208,14 +236,31 @@
     void tick().then(() => inputElement?.focus());
   }
 
+  function clearInput(): void {
+    input = "";
+    controller.clear();
+  }
+
+  function updateInput(value: string): void {
+    const next = truncateUtf8(value);
+    input = next;
+    if (next !== value) controller.showError({ errorCode: "invalid_input", error: `原文不能超过 ${MAX_INPUT_BYTES} 个 UTF-8 字节` });
+  }
+
+  function toggleTheme(): void {
+    if (showConfig) return;
+    persistConfig(configController.patch("isDark", !config.isDark));
+  }
+
   const shortcuts = createShortcutHandler({
     onTranslate: requestTranslation,
+    onCancel: () => controller.cancel(),
     onFocusInput: focusInputFromShortcut,
-    onClearInput: () => (input = ""),
+    onClearInput: clearInput,
     onSwapLangs: swapLanguages,
     onToggleHistory: () => showHistory ? closePanels() : openPanel("history"),
     onToggleSettings: () => showConfig ? closePanels() : openPanel("config"),
-    onToggleTheme: () => void configController.patch("isDark", !config.isDark),
+    onToggleTheme: toggleTheme,
     onClosePanel: closePanels,
   }, {
     isPanelOpen: () => showConfig || showHistory,
@@ -225,16 +270,34 @@
     shortcuts(event);
   }
 
+  function restoreHistoryEntry(entry: HistoryEntry): void {
+    const route = normalizeConfig({
+      sourceLanguage: entry.source,
+      targetLanguage: entry.target,
+    });
+    const restored = {
+      ...entry,
+      source: route.sourceLanguage,
+      target: route.targetLanguage,
+    };
+    skipAutoForInput = restored.input;
+    input = restored.input;
+    source = restored.source;
+    target = restored.target;
+    persistConfig(configController.save({
+      ...configController.snapshot(),
+      sourceLanguage: restored.source,
+      targetLanguage: restored.target,
+    }));
+    controller.restore(restored);
+    closePanels();
+    void tick().then(() => {
+      if (skipAutoForInput === restored.input) skipAutoForInput = null;
+    });
+  }
+
   onMount(async () => {
     await configController.load();
-    const loaded = configController.snapshot();
-    source = loaded.sourceLanguage;
-    target = loaded.targetLanguage;
-    try {
-      history = await desktopBridge.loadHistory();
-    } catch {
-      controller.showError("历史记录加载失败");
-    }
     for (const message of queuedErrors) controller.showError(message);
     queuedErrors = [];
   });
@@ -243,7 +306,6 @@
     controller.destroy();
     clipboardWatcher.stop();
     speaker.stop();
-    if (historySaveTimer) clearTimeout(historySaveTimer);
   });
 </script>
 
@@ -254,21 +316,24 @@
   <UtilityRail
     activePanel={showConfig ? "config" : showHistory ? "history" : null}
     isDark={config.isDark}
-    onTheme={() => void configController.patch("isDark", !config.isDark)}
+    onTheme={toggleTheme}
     onSettings={() => openPanel("config")}
     onHistory={() => openPanel("history")}
   />
 
   <main class="main-content">
     <CommandBar
-      {source} {target} activeEngine={config.defaultEngine} autoTranslate={config.autoTranslate} autoDetectLang={translation.autoDetectLang}
+      {source} {target} activeEngine={config.defaultEngine} baiduDomain={config.baidu.domain}
+      showBaiduDomain={config.defaultEngine === "baidu" || (config.compareMode && config.compareEngines.includes("baidu"))}
+      autoTranslate={config.autoTranslate} autoDetectLang={translation.autoDetectLang}
       detectedSource={translation.lastDetectedLang} clipboardWatch={config.clipboardWatch}
       compareMode={config.compareMode} isProcessing={translation.isProcessing} {canTranslate} {unavailableReason}
       onSource={(value) => setLanguage("source", value)} onTarget={(value) => setLanguage("target", value)}
-      onEngine={(engine) => void configController.patch("defaultEngine", engine)}
-      onSwap={swapLanguages} onAuto={(value) => void configController.patch("autoTranslate", value)}
-      onClipboard={() => void configController.patch("clipboardWatch", !config.clipboardWatch)}
-      onCompare={() => void configController.patch("compareMode", !config.compareMode)} onTranslate={requestTranslation}
+      onEngine={(engine) => persistConfig(configController.patch("defaultEngine", engine))}
+      onBaiduDomain={setBaiduDomain}
+      onSwap={swapLanguages} onAuto={(value) => persistConfig(configController.patch("autoTranslate", value))}
+      onClipboard={() => persistConfig(configController.patch("clipboardWatch", !config.clipboardWatch))}
+      onCompare={() => persistConfig(configController.patch("compareMode", !config.compareMode))} onTranslate={requestTranslation} onCancel={() => controller.cancel()}
     />
 
     {#if credentialMessage}
@@ -283,15 +348,15 @@
       <section class="editor-pane" aria-labelledby="source-title">
         <header class="pane-header">
           <div class="pane-title"><span class="pane-icon"><TextCursorInput size={14} /></span><span class="pane-label">输入</span><h2 id="source-title">原文</h2></div>
-          <span class="char-count">{input.length} 字符</span>
+          <span class="char-count">{inputBytes} / {MAX_INPUT_BYTES} 字节</span>
         </header>
-        <textarea class="editor" bind:this={inputElement} bind:value={input} placeholder="输入要翻译的文本" aria-label="原文" aria-keyshortcuts={ARIA_SHORTCUTS.focusInput} spellcheck="false"></textarea>
+        <textarea class="editor" bind:this={inputElement} value={input} oninput={(event) => updateInput(event.currentTarget.value)} placeholder="输入要翻译的文本" aria-label="原文" aria-keyshortcuts={ARIA_SHORTCUTS.focusInput} spellcheck="false"></textarea>
         <footer class="pane-footer">
           <span class="pane-note">{config.autoTranslate ? "自动翻译" : "手动翻译"}</span>
           <div class="pane-actions">
             {#if input}
               <button class="icon-action" onclick={() => speak(input, source === "auto" ? (translation.lastDetectedLang || "en") : source)} aria-label="朗读原文" title="朗读原文">{#if speakingText === input}<Square size={13} />{:else}<Volume2 size={14} />{/if}</button>
-              <button class="icon-action" onclick={() => (input = "")} aria-label="清空原文" aria-keyshortcuts={ARIA_SHORTCUTS.clearInput} title="清空原文"><X size={14} /></button>
+              <button class="icon-action" onclick={clearInput} aria-label="清空原文" aria-keyshortcuts={ARIA_SHORTCUTS.clearInput} title="清空原文"><X size={14} /></button>
             {/if}
           </div>
         </footer>
@@ -299,13 +364,14 @@
 
       <section class="editor-pane result-pane" aria-labelledby="result-title" aria-busy={translation.isProcessing}>
         <header class="pane-header">
-          <div class="pane-title"><span class="pane-icon result"><Languages size={14} /></span><span class="pane-label">输出</span><h2 id="result-title">{config.compareMode ? "对照译文" : "译文"}</h2><span class="pane-context">{config.compareMode ? "多引擎" : config.defaultEngine === "tencent" ? "混元" : "阿里云"}</span></div>
+          <div class="pane-title"><span class="pane-icon result"><Languages size={14} /></span><span class="pane-label">输出</span><h2 id="result-title">{config.compareMode ? "对照译文" : "译文"}</h2><span class="pane-context">{config.compareMode ? "多引擎" : engineLabel(config.defaultEngine)}</span></div>
           {#if translation.isProcessing && translation.output}<span class="updating"><i></i>正在更新</span>{/if}
         </header>
         {#if config.compareMode}
           <div class="compare-wrap"><ComparePanel engines={config.compareEngines} outputs={translation.compareOutputs} loading={translation.compareLoadingEngines} copied={copiedEngines} {speakingText} {target} {isConfigured} onToggle={toggleCompareEngine} onCopy={(engine) => void copyText(translation.compareOutputs[engine]?.text ?? "", engine)} onSpeak={speak} onSettings={() => openPanel("config")} /></div>
         {:else if translation.output}
           <textarea class="editor" readonly value={translation.output} aria-label="译文"></textarea>
+          {#if translation.notice}<div class="result-notice" role="status"><AlertCircle size={13} />{translation.notice}</div>{/if}
           <footer class="pane-footer">
             <span class="pane-note">{langs[target] ?? target}</span>
             <div class="pane-actions">
@@ -323,7 +389,7 @@
   </main>
 
   <Config open={showConfig} {config} onClose={closePanels} onSave={(next) => configController.save(next)} onTest={(engine, service) => desktopBridge.testConnection(engine, service)} />
-  <History open={showHistory} {history} onClose={closePanels} onClear={() => { history = []; scheduleHistorySave(); }} onSelect={(entry) => { suppressAuto = true; input = entry.input; source = entry.source; target = entry.target; controller.restore(entry); closePanels(); setTimeout(() => (suppressAuto = false), 0); }} />
+  <History open={showHistory} queryHistory={(query) => desktopBridge.queryHistory(query)} onClear={() => desktopBridge.clearHistory()} onExport={() => desktopBridge.exportHistory()} onError={(message) => controller.showError(message)} onClose={closePanels} onSelect={restoreHistoryEntry} />
 </div>
 
 <style>
@@ -349,6 +415,8 @@
   .editor { width: 100%; min-height: 0; flex: 1; resize: none; border: 0; outline: 0; padding: 18px; background: transparent; color: var(--text-main); font: var(--fw-regular) var(--fs-lg)/var(--lh-relaxed) var(--font-sans); }
   .editor::placeholder { color: color-mix(in srgb, var(--text-muted) 84%, transparent); }
   .pane-footer { display: flex; min-height: 38px; flex: 0 0 auto; align-items: center; justify-content: space-between; border-top: 1px solid var(--border-soft); padding: 0 var(--sp-3); color: var(--text-muted); font-size: var(--fs-xs); }
+  .result-notice { display: flex; min-height: 30px; flex: 0 0 auto; align-items: center; gap: var(--sp-2); border-top: 1px solid var(--warning-border); padding: 0 var(--sp-3); background: var(--warning-soft); color: var(--text-sec); font-size: var(--fs-xs); }
+  .result-notice :global(svg) { flex: 0 0 auto; color: var(--warning); }
   .pane-note { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .pane-actions { display: flex; min-width: 0; align-items: center; gap: 2px; }
   .pane-footer button { display: inline-flex; height: 28px; align-items: center; justify-content: center; gap: var(--sp-1); border: 1px solid transparent; border-radius: var(--radius-sm); padding: 0 var(--sp-2); background: transparent; color: var(--text-sec); cursor: pointer; font: inherit; }

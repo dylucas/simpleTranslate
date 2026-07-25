@@ -7,10 +7,12 @@ export const ARIA_SHORTCUTS = {
   toggleSettings: "Control+, Meta+,",
   toggleTheme: "Control+M Meta+M",
   closePanel: "Escape",
+  cancelTranslation: "Escape",
 } as const;
 
 export interface ShortcutHandlers {
   onTranslate?: () => void;
+  onCancel?: () => void;
   onFocusInput?: () => void;
   onClearInput?: () => void;
   onSwapLangs?: () => void;
@@ -79,6 +81,9 @@ export function createShortcutHandler(handlers: ShortcutHandlers, options: Short
       invoke(handlers.onToggleTheme, true);
       return;
     }
-    if (event.key === "Escape" && panelOpen) invoke(handlers.onClosePanel, true);
+    if (event.key === "Escape") {
+      if (panelOpen) invoke(handlers.onClosePanel, true);
+      else invoke(handlers.onCancel);
+    }
   };
 }

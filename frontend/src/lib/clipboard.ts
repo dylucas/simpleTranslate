@@ -13,7 +13,9 @@
 //   watcher.setBaseline(text); // 显式更新基线
 
 const DEFAULT_INTERVAL = 1500;
-const DEFAULT_MAX_LEN = 5000;
+import { MAX_INPUT_BYTES, utf8ByteLength } from "./textLimits";
+
+const DEFAULT_MAX_LEN = MAX_INPUT_BYTES;
 
 export interface ClipboardWatcherOptions {
   getText: () => Promise<string>;
@@ -41,19 +43,30 @@ export function createClipboardWatcher(opts: ClipboardWatcherOptions): Clipboard
 
   let timer: ReturnType<typeof setInterval> | null = null;
   let lastText = "";
+  let generation = 0;
+  let baselineRevision = 0;
+  let initialized = false;
+  let pollingGeneration: number | null = null;
 
   function setBaseline(text: string = ""): void {
+    baselineRevision += 1;
     lastText = text || "";
   }
 
-  async function poll(): Promise<void> {
+  async function poll(runGeneration: number): Promise<void> {
+    if (runGeneration !== generation || timer === null || !initialized) return;
+    if (pollingGeneration === runGeneration) return;
+    pollingGeneration = runGeneration;
+    const pollBaselineRevision = baselineRevision;
     try {
       const text = await getText();
+      if (runGeneration !== generation || timer === null) return;
+      if (pollBaselineRevision !== baselineRevision) return;
       if (
         text &&
         text !== lastText &&
         text.trim().length > 0 &&
-        text.length < maxTextLength &&
+        utf8ByteLength(text) <= maxTextLength &&
         !isBusy()
       ) {
         lastText = text;
@@ -61,19 +74,32 @@ export function createClipboardWatcher(opts: ClipboardWatcherOptions): Clipboard
       }
     } catch {
       // 读取失败静默忽略，下次重试
+    } finally {
+      if (pollingGeneration === runGeneration) pollingGeneration = null;
     }
   }
 
   function start(): void {
     if (timer) return;
+    const runGeneration = ++generation;
+    const startBaselineRevision = baselineRevision;
+    initialized = false;
     // 先记录当前剪贴板内容作为基线，避免开启即触发
     getText()
-      .then((text) => setBaseline(text))
-      .catch(() => {});
-    timer = setInterval(poll, intervalMs);
+      .then((text) => {
+        if (runGeneration !== generation || timer === null) return;
+        if (startBaselineRevision === baselineRevision) setBaseline(text);
+        initialized = true;
+      })
+      .catch(() => {
+        if (runGeneration === generation && timer !== null) initialized = true;
+      });
+    timer = setInterval(() => void poll(runGeneration), intervalMs);
   }
 
   function stop(): void {
+    generation += 1;
+    initialized = false;
     if (timer) {
       clearInterval(timer);
       timer = null;

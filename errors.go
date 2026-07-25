@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"strings"
+
+	"simpleTranslate/translate"
 )
 
 // 错误类别：用于前端按类别差异化提示与重试策略。
@@ -22,13 +25,15 @@ const (
 	ErrCodeInvalidInput = "invalid_input"
 	// ErrCodeServiceUnavailable 服务端 5xx 不可用
 	ErrCodeServiceUnavailable = "service_unavailable"
+	// ErrCodeCancelled 请求被用户或应用主动取消
+	ErrCodeCancelled = "cancelled"
 )
 
 // TranslateError 结构化翻译错误，序列化为 JSON 后供前端按类别处理。
 // 兼容旧前端：Error() 返回与原格式一致的字符串。
 type TranslateError struct {
 	Code    string `json:"code"`             // 错误类别，供前端判断重试策略
-	Engine  string `json:"engine,omitempty"` // 出错的引擎（tencent/aliyun）
+	Engine  string `json:"engine,omitempty"` // 出错的引擎（tencent/aliyun/baidu）
 	Message string `json:"message"`          // 用户可读的错误信息（已去除 Error: 前缀）
 	Cause   string `json:"cause,omitempty"`  // 底层错误摘要，便于调试
 }
@@ -58,6 +63,30 @@ func newTranslateError(code, engine, message string, cause error) *TranslateErro
 func classifyError(engine string, err error) *TranslateError {
 	if err == nil {
 		return nil
+	}
+	if errors.Is(err, context.Canceled) {
+		return newTranslateError(ErrCodeCancelled, engine, "请求已取消", err)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return newTranslateError(ErrCodeTimeout, engine, "请求超时，请稍后重试", err)
+	}
+	var baiduErr *translate.BaiduAPIError
+	if errors.As(err, &baiduErr) {
+		switch baiduErr.Code {
+		case "52003", "54001", "58000", "58002", "58003", "90107":
+			return newTranslateError(ErrCodeCredentials, engine, "百度凭据无效、服务未开通或 IP 配置不正确", err)
+		case "54003", "54004", "54005":
+			return newTranslateError(ErrCodeRateLimit, engine, "百度翻译限流或余额不足，请稍后重试", err)
+		case "52001":
+			return newTranslateError(ErrCodeTimeout, engine, "请求超时，请稍后重试", err)
+		case "52002":
+			return newTranslateError(ErrCodeServiceUnavailable, engine, "百度翻译服务暂时不可用", err)
+		case "54000", "54009", "58001", "20003":
+			return newTranslateError(ErrCodeInvalidInput, engine, "百度翻译不支持当前内容或语种方向", err)
+		}
+		if baiduErr.HTTPStatus >= 500 {
+			return newTranslateError(ErrCodeServiceUnavailable, engine, "百度翻译服务暂时不可用", err)
+		}
 	}
 	msg := err.Error()
 	lower := strings.ToLower(msg)
@@ -118,7 +147,11 @@ func classifyError(engine string, err error) *TranslateError {
 	}
 
 	// 输入非法：空文本
-	if strings.Contains(lower, "空文本") || strings.Contains(lower, "empty text") {
+	if strings.Contains(lower, "不能超过") {
+		return newTranslateError(ErrCodeInvalidInput, engine, "输入文本过长，百度翻译正文最多 6000 个 UTF-8 字节", err)
+	}
+	if strings.Contains(lower, "空文本") ||
+		strings.Contains(lower, "empty text") {
 		return newTranslateError(ErrCodeInvalidInput, engine, "输入文本为空", err)
 	}
 
