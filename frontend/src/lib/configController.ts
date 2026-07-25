@@ -1,13 +1,9 @@
 import { get, writable, type Readable } from "svelte/store";
+import { BAIDU_DOMAINS } from "./baiduDomains";
 import { cloneConfig, DEFAULT_CONFIG, type DesktopBridge } from "./bridge";
 import { langs } from "./languages";
 import { isEngineId } from "./engines";
 import type { BaiduDomain, CloudConfig, EngineId } from "./types";
-
-const BAIDU_DOMAINS = new Set<BaiduDomain>([
-  "general", "it", "finance", "machinery", "senimed", "novel",
-  "academic", "aerospace", "wiki", "news", "law", "contract",
-]);
 
 export interface ConfigState {
   value: CloudConfig;

@@ -10,7 +10,7 @@
   import { ARIA_SHORTCUTS, createShortcutHandler } from "./lib/shortcuts";
   import { createSpeaker } from "./lib/speech";
   import { createTranslateController, type TranslateController } from "./lib/translateController";
-  import type { EngineId, HistoryEntry } from "./lib/types";
+  import type { BaiduDomain, EngineId, HistoryEntry } from "./lib/types";
   import ComparePanel from "./lib/ComparePanel.svelte";
   import Config from "./lib/Config.svelte";
   import ErrorToast from "./lib/ErrorToast.svelte";
@@ -64,6 +64,7 @@
     getSource: () => source,
     getTarget: () => target,
     getActiveEngine: () => config.defaultEngine,
+    getBaiduDomain: () => config.baidu.domain,
     getCompareMode: () => config.compareMode,
     getCompareEngines: () => availableCompareEngines,
     getHistory: () => history,
@@ -128,7 +129,10 @@
 
   $effect(() => {
     const value = input;
-    const route = `${source}\u0000${target}`;
+    const domain = config.defaultEngine === "baidu" || (config.compareMode && availableCompareEngines.includes("baidu"))
+      ? config.baidu.domain
+      : "";
+    const route = `${source}\u0000${target}\u0000${domain}`;
     if (skipAutoForInput === value) {
       controller.cancelAutoTranslate();
       skipAutoForInput = null;
@@ -168,6 +172,13 @@
     if (kind === "source") source = value;
     else target = value;
     persistConfig(configController.patch(kind === "source" ? "sourceLanguage" : "targetLanguage", value));
+  }
+
+  function setBaiduDomain(domain: BaiduDomain): void {
+    if (domain === config.baidu.domain) return;
+    const next = configController.snapshot();
+    next.baidu = { ...next.baidu, domain };
+    persistConfig(configController.save(next));
   }
 
   function swapLanguages(): void {
@@ -319,11 +330,14 @@
 
   <main class="main-content">
     <CommandBar
-      {source} {target} activeEngine={config.defaultEngine} autoTranslate={config.autoTranslate} autoDetectLang={translation.autoDetectLang}
+      {source} {target} activeEngine={config.defaultEngine} baiduDomain={config.baidu.domain}
+      showBaiduDomain={config.defaultEngine === "baidu" || (config.compareMode && config.compareEngines.includes("baidu"))}
+      autoTranslate={config.autoTranslate} autoDetectLang={translation.autoDetectLang}
       detectedSource={translation.lastDetectedLang} clipboardWatch={config.clipboardWatch}
       compareMode={config.compareMode} isProcessing={translation.isProcessing} {canTranslate} {unavailableReason}
       onSource={(value) => setLanguage("source", value)} onTarget={(value) => setLanguage("target", value)}
       onEngine={(engine) => persistConfig(configController.patch("defaultEngine", engine))}
+      onBaiduDomain={setBaiduDomain}
       onSwap={swapLanguages} onAuto={(value) => persistConfig(configController.patch("autoTranslate", value))}
       onClipboard={() => persistConfig(configController.patch("clipboardWatch", !config.clipboardWatch))}
       onCompare={() => persistConfig(configController.patch("compareMode", !config.compareMode))} onTranslate={requestTranslation} onCancel={() => controller.cancel()}

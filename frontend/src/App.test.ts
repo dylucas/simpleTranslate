@@ -37,6 +37,25 @@ describe("standalone app", () => {
 
     await fireEvent.click(await screen.findByRole("button", { name: "百度" }));
     await waitFor(() => expect(saveConfig).toHaveBeenCalledWith(expect.objectContaining({ defaultEngine: "baidu" })));
+    expect(screen.getByRole("combobox", { name: "翻译领域" })).toHaveValue("general");
+  });
+
+  it("changes and persists the Baidu domain from the main interface", async () => {
+    await desktopBridge.saveConfig({
+      ...DEFAULT_CONFIG,
+      defaultEngine: "baidu",
+      baidu: { appId: "app", secretKey: "key", domain: "general" },
+    });
+    const saveConfig = vi.spyOn(desktopBridge, "saveConfig");
+    render(App);
+
+    const domain = await screen.findByRole("combobox", { name: "翻译领域" });
+    await fireEvent.change(domain, { target: { value: "academic" } });
+
+    await waitFor(() => expect(saveConfig).toHaveBeenCalledWith(expect.objectContaining({
+      baidu: expect.objectContaining({ domain: "academic" }),
+    })));
+    expect(domain).toHaveValue("academic");
   });
 
   it("renders a Baidu field fallback notice for a single result", async () => {

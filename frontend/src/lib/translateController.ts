@@ -10,6 +10,7 @@ import {
   type AnyErrorInput,
 } from "./errors";
 import type {
+  BaiduDomain,
   EngineId,
   EngineTranslateResult,
   ErrorToast,
@@ -36,6 +37,7 @@ export interface TranslateControllerDeps {
   getSource: () => string;
   getTarget: () => string;
   getActiveEngine: () => EngineId;
+  getBaiduDomain: () => BaiduDomain;
   getCompareMode: () => boolean;
   getCompareEngines: () => EngineId[];
   getHistory: () => HistoryEntry[];
@@ -118,6 +120,7 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
       deps.getTarget(),
       compareMode,
       deps.getActiveEngine(),
+      deps.getBaiduDomain(),
       compareMode ? deps.getCompareEngines() : [],
     ]);
   }

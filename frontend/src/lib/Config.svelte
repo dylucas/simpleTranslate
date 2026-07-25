@@ -4,6 +4,7 @@
     RefreshCcw, Save, Settings, X, XCircle,
   } from "@lucide/svelte";
   import { tick } from "svelte";
+  import { BAIDU_DOMAIN_OPTIONS } from "./baiduDomains";
   import { cloneConfig, DEFAULT_CONFIG } from "./bridge";
   import { ARIA_SHORTCUTS } from "./shortcuts";
   import type { BaiduConfig, BaiduDomain, CloudConfig, EngineId, ServiceConfig } from "./types";
@@ -176,18 +177,7 @@
           <label><span>APP ID</span><div class="input-wrap"><KeyRound size={15} /><input type={showBaiduId ? "text" : "password"} value={draft.baidu.appId} oninput={(event) => updateBaidu("appId", event.currentTarget.value)} /><button type="button" onclick={() => (showBaiduId = !showBaiduId)} aria-label="显示或隐藏百度 APP ID">{#if showBaiduId}<EyeOff size={15} />{:else}<Eye size={15} />{/if}</button></div></label>
           <label><span>密钥</span><div class="input-wrap"><KeyRound size={15} /><input type={showBaiduKey ? "text" : "password"} value={draft.baidu.secretKey} oninput={(event) => updateBaidu("secretKey", event.currentTarget.value)} /><button type="button" onclick={() => (showBaiduKey = !showBaiduKey)} aria-label="显示或隐藏百度密钥">{#if showBaiduKey}<EyeOff size={15} />{:else}<Eye size={15} />{/if}</button></div></label>
           <label class="endpoint"><span>翻译领域</span><select value={draft.baidu.domain} onchange={(event) => updateBaidu("domain", event.currentTarget.value as BaiduDomain)} aria-label="百度翻译领域">
-            <option value="general">通用</option>
-            <option value="it">信息技术</option>
-            <option value="finance">金融财经</option>
-            <option value="machinery">机械制造</option>
-            <option value="senimed">生物医药</option>
-            <option value="novel">网络文学</option>
-            <option value="academic">学术论文</option>
-            <option value="aerospace">航空航天</option>
-            <option value="wiki">人文社科</option>
-            <option value="news">新闻资讯</option>
-            <option value="law">法律法规</option>
-            <option value="contract">合同</option>
+            {#each BAIDU_DOMAIN_OPTIONS as option}<option value={option.value}>{option.label}</option>{/each}
           </select></label>
         </div>
         <div class="test-row">
