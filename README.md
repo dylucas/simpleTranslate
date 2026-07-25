@@ -2,8 +2,7 @@
 
 一个干净清爽的翻译工具
 
-![alt text](./.github/screenshots/image.png)
-![alt text](./.github/screenshots/image-1.png)
+![alt text](.github/screenshots/ScreenShot_2026-07-25_115835_725.png)
 
 ## 简介
 
