@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 	"simpleTranslate/config"
+	"simpleTranslate/translate"
 )
 
 func TestCancelTranslationCancelsRegisteredRequest(t *testing.T) {
@@ -93,6 +95,45 @@ func TestTranslateMultiCancellationSkipsEventsAndCache(t *testing.T) {
 	}
 	if app.translateCache.len() != 0 {
 		t.Fatalf("cancelled multi translation should not populate cache, got %d entries", app.translateCache.len())
+	}
+}
+
+func TestTranslateMultiRejectsLateSuccessAfterCancellation(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	app.translateInvoke = func(context.Context, string, string, string, string) (string, error) {
+		close(started)
+		<-release
+		return "late success", nil
+	}
+	emitted := 0
+	app.eventEmit = func(EngineTranslateResult) { emitted++ }
+	resultCh := make(chan MultiTranslateResult, 1)
+	go func() {
+		resultCh <- app.TranslateMulti(MultiTranslateRequest{
+			RequestID: "late-success",
+			Text:      "hello",
+			Source:    "en",
+			Target:    "zh",
+			Engines:   []string{"tencent"},
+		})
+	}()
+	<-started
+	if !app.CancelTranslation("late-success") {
+		t.Fatal("expected active translation to be cancellable")
+	}
+	close(release)
+
+	result := <-resultCh
+	if got := result.Results["tencent"].ErrorCode; got != ErrCodeCancelled {
+		t.Fatalf("ErrorCode = %q, want %q", got, ErrCodeCancelled)
+	}
+	if emitted != 0 {
+		t.Fatalf("cancelled late success emitted %d events", emitted)
+	}
+	if app.translateCache.len() != 0 {
+		t.Fatalf("cancelled late success populated %d cache entries", app.translateCache.len())
 	}
 }
 
@@ -240,7 +281,7 @@ func TestTranslateMultiRejectsInvalidLanguageRoute(t *testing.T) {
 
 func TestTranslateMultiEmitsCachedEngineResults(t *testing.T) {
 	app := NewAppWithDataDir(t.TempDir())
-	app.translateCache.set(cacheKey("tencent", "en", "zh", "hello"), "cached result")
+	app.translateCache.set(translationResultCacheKey(0, "tencent", "", "en", "zh", "hello"), "cached result")
 	var emitted []EngineTranslateResult
 	app.eventEmit = func(result EngineTranslateResult) {
 		emitted = append(emitted, result)
@@ -263,8 +304,8 @@ func TestTranslateMultiEmitsCachedEngineResults(t *testing.T) {
 }
 
 func TestBaiduDomainCacheIsolationAndFallbackNotice(t *testing.T) {
-	general := translationResultCacheKey("baidu", "general", "fr", "zh", "bonjour")
-	field := translationResultCacheKey("baidu", "it", "fr", "zh", "bonjour")
+	general := translationResultCacheKey(0, "baidu", "general", "fr", "zh", "bonjour")
+	field := translationResultCacheKey(0, "baidu", "it", "fr", "zh", "bonjour")
 	if general == field {
 		t.Fatal("Baidu general and field modes must not share cache keys")
 	}
@@ -287,6 +328,90 @@ func TestBaiduDomainCacheIsolationAndFallbackNotice(t *testing.T) {
 	})
 	if result.Text != "你好" || result.Notice == "" {
 		t.Fatalf("fallback result = %+v", result)
+	}
+}
+
+func TestConfigSaveIsolatesLateTranslationCacheWrite(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	started := make(chan struct{})
+	release := make(chan struct{})
+	calls := 0
+	app.translateInvoke = func(context.Context, string, string, string, string) (string, error) {
+		calls++
+		if calls == 1 {
+			close(started)
+			<-release
+			return "old credentials result", nil
+		}
+		return "new credentials result", nil
+	}
+
+	firstResult := make(chan TranslateResult, 1)
+	go func() {
+		firstResult <- app.TranslateText(TranslateRequest{
+			RequestID: "before-save", Text: "hello", Source: "en", Target: "zh", Engine: "tencent",
+		})
+	}()
+	<-started
+
+	cfg := config.DefaultCloudConfig()
+	cfg.Tencent.SecretKey = "new-key"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	if got := (<-firstResult).Text; got != "old credentials result" {
+		t.Fatalf("in-flight result = %q, want old credentials result", got)
+	}
+
+	second := app.TranslateText(TranslateRequest{
+		RequestID: "after-save", Text: "hello", Source: "en", Target: "zh", Engine: "tencent",
+	})
+	if second.Text != "new credentials result" {
+		t.Fatalf("post-save result = %q, want new credentials result", second.Text)
+	}
+	if calls != 2 {
+		t.Fatalf("translation calls = %d, want 2", calls)
+	}
+}
+
+func TestSaveConfigInvalidatesChangedAliyunClient(t *testing.T) {
+	service := config.ServiceConfig{
+		SecretId:  "access-id",
+		SecretKey: "access-key",
+		Region:    "cn-hangzhou",
+	}
+	translate.InvalidateAliyunClientIfConfigChanged(config.ServiceConfig{})
+	defer translate.InvalidateAliyunClientIfConfigChanged(config.ServiceConfig{})
+
+	initial, err := translate.CreateClientWithConfig(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := NewAppWithDataDir(t.TempDir())
+	cfg := config.DefaultCloudConfig()
+	cfg.Aliyun = service
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	retained, err := translate.CreateClientWithConfig(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if retained != initial {
+		t.Fatal("equivalent saved config should preserve the Aliyun client")
+	}
+
+	cfg.Aliyun.SecretKey = "replacement-key"
+	if err := app.SaveConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	rebuilt, err := translate.CreateClientWithConfig(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rebuilt == initial {
+		t.Fatal("changed Aliyun credentials should release the cached client")
 	}
 }
 
@@ -394,6 +519,21 @@ func TestLoadHistory_InvalidJSON(t *testing.T) {
 	}
 }
 
+func TestLoadHistoryRejectsOversizedFile(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	path := app.getHistoryPath()
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, maxHistoryFileBytes+1); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := app.loadHistory(); err == nil || !strings.Contains(err.Error(), "超过") {
+		t.Fatalf("oversized history error = %v", err)
+	}
+}
+
 func TestLoadHistory_NormalizesNullAndOversizedFiles(t *testing.T) {
 	t.Run("null", func(t *testing.T) {
 		app := NewAppWithDataDir(t.TempDir())
@@ -432,6 +572,26 @@ func TestLoadHistory_NormalizesNullAndOversizedFiles(t *testing.T) {
 	})
 }
 
+func TestLoadHistoryValidatesEntriesBeyondRetentionLimit(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	var data strings.Builder
+	data.WriteByte('[')
+	for i := 0; i < historyEntryLimit; i++ {
+		if i > 0 {
+			data.WriteByte(',')
+		}
+		data.WriteString(`{"input":"valid"}`)
+	}
+	data.WriteString(`,{"input":]`)
+	if err := os.WriteFile(app.getHistoryPath(), []byte(data.String()), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := app.loadHistory(); err == nil {
+		t.Fatal("malformed entry beyond retention limit should be rejected")
+	}
+}
+
 // TestGetHistoryPath_CreatesDir 历史路径所在目录会被自动创建
 func TestGetHistoryPath_CreatesDir(t *testing.T) {
 	app := NewAppWithDataDir(filepath.Join(t.TempDir(), "nested"))
@@ -452,11 +612,11 @@ func TestQueryAppendClearHistory(t *testing.T) {
 		}
 	}
 	page, err := app.QueryHistory(HistoryQuery{Offset: 0, Limit: 10})
-	if err != nil || len(page.Entries) != 10 || page.Total != 25 || !page.HasMore {
+	if err != nil || len(page.Entries) != 10 || page.Total != 25 || page.AllTotal != 25 || !page.HasMore {
 		t.Fatalf("first page = %+v err=%v", page, err)
 	}
 	search, err := app.QueryHistory(HistoryQuery{Query: "INPUT-02", Limit: 10})
-	if err != nil || search.Total != 1 || search.Entries[0].Input != "input-02" {
+	if err != nil || search.Total != 1 || search.AllTotal != 25 || search.Entries[0].Input != "input-02" {
 		t.Fatalf("search = %+v err=%v", search, err)
 	}
 	added, err := app.AppendHistory(page.Entries[0])
@@ -467,8 +627,88 @@ func TestQueryAppendClearHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	empty, err := app.QueryHistory(HistoryQuery{})
-	if err != nil || empty.Total != 0 || empty.Entries == nil {
+	if err != nil || empty.Total != 0 || empty.AllTotal != 0 || empty.Entries == nil {
 		t.Fatalf("cleared page = %+v err=%v", empty, err)
+	}
+}
+
+func TestAppendHistoryRejectsOversizedOutput(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	added, err := app.AppendHistory(HistoryEntry{
+		Input:  "hello",
+		Output: strings.Repeat("x", maxHistoryOutputBytes+1),
+		Source: "en",
+		Target: "zh",
+	})
+	if err == nil || added {
+		t.Fatalf("oversized output: added=%v err=%v", added, err)
+	}
+	page, queryErr := app.QueryHistory(HistoryQuery{})
+	if queryErr != nil || page.AllTotal != 0 {
+		t.Fatalf("history changed after rejected append: page=%+v err=%v", page, queryErr)
+	}
+}
+
+func TestAppendHistoryRejectsOversizedMetadata(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*HistoryEntry)
+	}{
+		{name: "source", mutate: func(entry *HistoryEntry) { entry.Source = strings.Repeat("x", maxHistoryLanguageBytes+1) }},
+		{name: "target", mutate: func(entry *HistoryEntry) { entry.Target = strings.Repeat("x", maxHistoryLanguageBytes+1) }},
+		{name: "time", mutate: func(entry *HistoryEntry) { entry.Time = strings.Repeat("x", maxHistoryTimeBytes+1) }},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := NewAppWithDataDir(t.TempDir())
+			entry := HistoryEntry{Input: "hello", Output: "output", Source: "en", Target: "zh", Time: "now"}
+			tt.mutate(&entry)
+			added, err := app.AppendHistory(entry)
+			if err == nil || added {
+				t.Fatalf("oversized %s: added=%v err=%v", tt.name, added, err)
+			}
+			page, queryErr := app.QueryHistory(HistoryQuery{})
+			if queryErr != nil || page.AllTotal != 0 {
+				t.Fatalf("history changed after rejected append: page=%+v err=%v", page, queryErr)
+			}
+		})
+	}
+}
+
+func TestQueryHistoryRejectsOversizedSearchBeforeReadingFile(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	if err := os.WriteFile(app.getHistoryPath(), []byte("invalid history"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := app.QueryHistory(HistoryQuery{Query: strings.Repeat("x", maxHistoryQueryBytes+1)})
+	if err == nil || !strings.Contains(err.Error(), "搜索词") {
+		t.Fatalf("oversized history query error = %v", err)
+	}
+}
+
+func TestQueryHistoryHandlesExtremePaginationValues(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	for i := 0; i < 3; i++ {
+		if _, err := app.AppendHistory(HistoryEntry{ID: int64(i), Input: fmt.Sprintf("input-%d", i), Output: "output"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	page, err := app.QueryHistory(HistoryQuery{Offset: int(^uint(0) >> 1), Limit: maxHistoryPageLimit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Entries) != 0 || page.Total != 3 || page.HasMore {
+		t.Fatalf("extreme offset page = %+v", page)
+	}
+
+	page, err = app.QueryHistory(HistoryQuery{Offset: -1, Limit: int(^uint(0) >> 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Entries) != 3 || page.Total != 3 || page.HasMore {
+		t.Fatalf("normalized bounds page = %+v", page)
 	}
 }
 
@@ -577,6 +817,51 @@ func TestConnectionDraftDoesNotPersist(t *testing.T) {
 	}
 	if got.Tencent.SecretKey != "persisted-key" {
 		t.Fatalf("connection test mutated persisted config: %q", got.Tencent.SecretKey)
+	}
+}
+
+func TestConnectionUsesBoundedContext(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	probeErr := errors.New("probe failed")
+	app.connectionTestInvoke = func(ctx context.Context, engine string, _ ServiceConfig) error {
+		if engine != "aliyun" {
+			t.Fatalf("engine = %q, want aliyun", engine)
+		}
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("connection test context has no deadline")
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 || remaining > engineTimeout {
+			t.Fatalf("connection test deadline remaining = %v, want (0, %v]", remaining, engineTimeout)
+		}
+		return probeErr
+	}
+
+	err := app.TestConnection(" Aliyun ", ServiceConfig{})
+	if !errors.Is(err, probeErr) {
+		t.Fatalf("TestConnection error = %v, want wrapped probe error", err)
+	}
+}
+
+func TestConnectionInheritsAppCancellation(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	appCtx, cancelApp := context.WithCancel(context.Background())
+	app.startup(appCtx)
+	app.connectionTestInvoke = func(ctx context.Context, _ string, _ ServiceConfig) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+
+	cancelApp()
+	err := app.TestConnection("tencent", ServiceConfig{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("TestConnection error = %v, want context.Canceled", err)
+	}
+
+	err = app.TestBaiduConnection(BaiduConfig{AppID: "app", SecretKey: "secret"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("TestBaiduConnection error = %v, want context.Canceled", err)
 	}
 }
 

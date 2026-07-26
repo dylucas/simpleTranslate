@@ -11,7 +11,10 @@ describe("standalone app", () => {
     await desktopBridge.clearHistory();
   });
 
-  afterEach(() => vi.restoreAllMocks());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
 
   it("renders with the mock bridge instead of a blank Wails runtime error", async () => {
     render(App);
@@ -171,6 +174,31 @@ describe("standalone app", () => {
     await fireEvent.click(await screen.findByRole("button", { name: "复制译文" }));
 
     expect(setClipboardText).toHaveBeenCalledWith("你好");
+  });
+
+  it("keeps copy feedback for the latest repeated copy", async () => {
+    await desktopBridge.saveConfig({
+      ...DEFAULT_CONFIG,
+      autoTranslate: false,
+      tencent: { ...DEFAULT_CONFIG.tencent, secretKey: "sk-test" },
+    });
+    vi.useFakeTimers();
+    render(App);
+
+    await vi.waitFor(() => expect(screen.getByRole("textbox", { name: "原文" })).toBeInTheDocument());
+    await fireEvent.input(screen.getByRole("textbox", { name: "原文" }), { target: { value: "hello" } });
+    await fireEvent.click(screen.getByRole("button", { name: /^翻译$/ }));
+    await vi.waitFor(() => expect(screen.getByRole("button", { name: "复制译文" })).toBeInTheDocument());
+    await fireEvent.click(screen.getByRole("button", { name: "复制译文" }));
+    await vi.waitFor(() => expect(screen.getByRole("button", { name: "译文已复制" })).toBeInTheDocument());
+
+    await vi.advanceTimersByTimeAsync(1000);
+    await fireEvent.click(screen.getByRole("button", { name: "译文已复制" }));
+    await vi.advanceTimersByTimeAsync(700);
+    expect(screen.getByRole("button", { name: "译文已复制" })).toBeInTheDocument();
+
+    await vi.advanceTimersByTimeAsync(900);
+    expect(screen.getByRole("button", { name: "复制译文" })).toBeInTheDocument();
   });
 
   it("exposes an immediate cancel action for an in-flight translation", async () => {

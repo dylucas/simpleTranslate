@@ -128,6 +128,7 @@ export function createMockBridge(initial: CloudConfig = DEFAULT_CONFIG): Desktop
       return {
         entries: filtered.slice(offset, offset + limit).map((item) => ({ ...item })),
         total: filtered.length,
+        allTotal: history.length,
         hasMore: offset + limit < filtered.length,
       };
     },

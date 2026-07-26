@@ -69,6 +69,7 @@ func TestClassifyError_Network(t *testing.T) {
 func TestClassifyError_RateLimit(t *testing.T) {
 	cases := []string{
 		"HTTP 429: Too Many Requests",
+		"status code 429",
 		"rate limit exceeded",
 		"throttling",
 		"配额已用尽",
@@ -87,11 +88,27 @@ func TestClassifyError_ServiceUnavailable(t *testing.T) {
 		"HTTP 500: Internal Server Error",
 		"HTTP 502: Bad Gateway",
 		"HTTP 503: Service Unavailable",
+		"Code 504",
 	}
 	for _, c := range cases {
 		te := classifyError("aliyun", errors.New(c))
 		if te.Code != ErrCodeServiceUnavailable {
 			t.Errorf("classify(%q) = %q, want %q", c, te.Code, ErrCodeServiceUnavailable)
+		}
+	}
+}
+
+func TestClassifyError_DoesNotTreatUnrelatedNumbersAsHTTPStatus(t *testing.T) {
+	for _, tt := range []struct {
+		message string
+		want    string
+	}{
+		{message: "dial tcp 127.0.0.1:5000: connect: connection refused", want: ErrCodeNetwork},
+		{message: "processed 500 records", want: ErrCodeUnknown},
+		{message: "request id 429123 failed", want: ErrCodeUnknown},
+	} {
+		if got := classifyError("tencent", errors.New(tt.message)); got.Code != tt.want {
+			t.Errorf("classify(%q) = %q, want %q", tt.message, got.Code, tt.want)
 		}
 	}
 }

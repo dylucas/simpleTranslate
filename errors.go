@@ -3,10 +3,14 @@ package main
 import (
 	"context"
 	"errors"
+	"net"
+	"regexp"
 	"strings"
 
 	"simpleTranslate/translate"
 )
+
+var errorStatusPattern = regexp.MustCompile(`(?i)\b(?:http|status(?:[[:space:]]+code)?|code)[[:space:]:=]*(429|500|502|503|504)\b`)
 
 // 错误类别：用于前端按类别差异化提示与重试策略。
 // 前端通过 TranslateError.Code 字段读取此值。
@@ -88,6 +92,13 @@ func classifyError(engine string, err error) *TranslateError {
 			return newTranslateError(ErrCodeServiceUnavailable, engine, "百度翻译服务暂时不可用", err)
 		}
 	}
+	var networkErr net.Error
+	if errors.As(err, &networkErr) {
+		if networkErr.Timeout() {
+			return newTranslateError(ErrCodeTimeout, engine, "请求超时，请稍后重试", err)
+		}
+		return newTranslateError(ErrCodeNetwork, engine, "网络连接失败，请检查网络", err)
+	}
 	msg := err.Error()
 	lower := strings.ToLower(msg)
 
@@ -116,7 +127,7 @@ func classifyError(engine string, err error) *TranslateError {
 	}
 
 	// 限流：429 / rate limit / 配额
-	if strings.Contains(lower, "429") ||
+	if containsErrorStatus(lower, "429") ||
 		strings.Contains(lower, "rate limit") ||
 		strings.Contains(lower, "ratelimit") ||
 		strings.Contains(lower, "配额") ||
@@ -125,10 +136,7 @@ func classifyError(engine string, err error) *TranslateError {
 	}
 
 	// 服务不可用：5xx
-	if strings.Contains(lower, "500") ||
-		strings.Contains(lower, "502") ||
-		strings.Contains(lower, "503") ||
-		strings.Contains(lower, "504") ||
+	if containsErrorStatus(lower, "500", "502", "503", "504") ||
 		strings.Contains(lower, "internal server error") ||
 		strings.Contains(lower, "service unavailable") ||
 		strings.Contains(lower, "bad gateway") {
@@ -157,6 +165,18 @@ func classifyError(engine string, err error) *TranslateError {
 
 	// 兜底
 	return newTranslateError(ErrCodeUnknown, engine, "翻译失败", err)
+}
+
+func containsErrorStatus(message string, codes ...string) bool {
+	matches := errorStatusPattern.FindAllStringSubmatch(message, -1)
+	for _, match := range matches {
+		for _, code := range codes {
+			if match[1] == code {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // wrapTranslateError 将底层翻译错误包装为 TranslateError。

@@ -4,7 +4,10 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // TestGetConfig_MissingFile 文件不存在时返回默认配置且无错误
@@ -91,6 +94,46 @@ func TestGetConfig_InvalidJSON(t *testing.T) {
 	}
 	if !reflect.DeepEqual(cfg, DefaultCloudConfig()) {
 		t.Errorf("损坏 JSON 应返回默认配置，得到 %+v", cfg)
+	}
+}
+
+func TestGetConfigRejectsOversizedFile(t *testing.T) {
+	InvalidateCache()
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Truncate(path, maxConfigFileBytes+1); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := GetConfig(path); err == nil || !strings.Contains(err.Error(), "超过") {
+		t.Fatalf("oversized config error = %v", err)
+	}
+}
+
+func TestSaveConfigRejectsOversizedFileWithoutChangingCache(t *testing.T) {
+	InvalidateCache()
+	path := filepath.Join(t.TempDir(), "config.json")
+	baseline := DefaultCloudConfig()
+	baseline.DefaultEngine = "aliyun"
+	if err := SaveConfig(path, baseline); err != nil {
+		t.Fatal(err)
+	}
+
+	oversized := baseline
+	oversized.DefaultEngine = "baidu"
+	oversized.Tencent.SecretKey = strings.Repeat("x", maxConfigFileBytes)
+	if err := SaveConfig(path, oversized); err == nil || !strings.Contains(err.Error(), "超过") {
+		t.Fatalf("oversized config save error = %v", err)
+	}
+
+	got, err := GetConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DefaultEngine != baseline.DefaultEngine || got.Tencent.SecretKey != baseline.Tencent.SecretKey {
+		t.Fatalf("failed save changed cached config: %+v", got)
 	}
 }
 
@@ -201,6 +244,38 @@ func TestNormalizeConfigBaidu(t *testing.T) {
 	}
 }
 
+func TestNormalizeConfigEngines(t *testing.T) {
+	cfg := normalizeConfig(CloudConfig{
+		DefaultEngine:  " Aliyun ",
+		CompareEngines: []string{" BAIDU ", "aliyun", "baidu", "invalid"},
+		Aliyun:         ServiceConfig{Region: " cn-shanghai "},
+	})
+	if cfg.DefaultEngine != "aliyun" {
+		t.Fatalf("default engine = %q, want aliyun", cfg.DefaultEngine)
+	}
+	if !reflect.DeepEqual(cfg.CompareEngines, []string{"baidu", "aliyun"}) {
+		t.Fatalf("compare engines = %v, want [baidu aliyun]", cfg.CompareEngines)
+	}
+	if cfg.Aliyun.Region != "cn-shanghai" {
+		t.Fatalf("Aliyun region = %q, want cn-shanghai", cfg.Aliyun.Region)
+	}
+
+	fallback := normalizeConfig(CloudConfig{
+		DefaultEngine:  "unknown",
+		CompareEngines: []string{"unknown"},
+		Aliyun:         ServiceConfig{Region: "  "},
+	})
+	if fallback.DefaultEngine != "tencent" {
+		t.Fatalf("invalid default engine = %q, want tencent", fallback.DefaultEngine)
+	}
+	if !reflect.DeepEqual(fallback.CompareEngines, []string{"tencent", "aliyun", "baidu"}) {
+		t.Fatalf("invalid compare engines = %v", fallback.CompareEngines)
+	}
+	if fallback.Aliyun.Region != "cn-hangzhou" {
+		t.Fatalf("blank Aliyun region = %q, want cn-hangzhou", fallback.Aliyun.Region)
+	}
+}
+
 func TestNormalizeConfigLanguages(t *testing.T) {
 	cfg := normalizeConfig(CloudConfig{SourceLanguage: " JA ", TargetLanguage: "KO"})
 	if cfg.SourceLanguage != "jp" || cfg.TargetLanguage != "kr" {
@@ -279,5 +354,61 @@ func TestGetConfig_CacheIsolatedByPath(t *testing.T) {
 	}
 	if gotB.DefaultEngine != "aliyun" {
 		t.Errorf("path B 期望 aliyun，得到 %q", gotB.DefaultEngine)
+	}
+}
+
+func TestGetConfigDoesNotOverwriteConcurrentSave(t *testing.T) {
+	InvalidateCache()
+	path := filepath.Join(t.TempDir(), "config.json")
+	if err := SaveConfig(path, CloudConfig{DefaultEngine: "tencent"}); err != nil {
+		t.Fatal(err)
+	}
+	InvalidateCache()
+
+	originalReadFile := readConfigFile
+	defer func() { readConfigFile = originalReadFile }()
+	readStarted := make(chan struct{})
+	releaseRead := make(chan struct{})
+	var intercept sync.Once
+	readConfigFile = func(path string) ([]byte, error) {
+		data, err := os.ReadFile(path)
+		intercept.Do(func() {
+			close(readStarted)
+			<-releaseRead
+		})
+		return data, err
+	}
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := GetConfig(path)
+		readDone <- err
+	}()
+	<-readStarted
+
+	saveDone := make(chan error, 1)
+	go func() {
+		saveDone <- SaveConfig(path, CloudConfig{DefaultEngine: "baidu"})
+	}()
+	select {
+	case err := <-saveDone:
+		close(releaseRead)
+		t.Fatalf("SaveConfig completed before the in-flight read: %v", err)
+	case <-time.After(100 * time.Millisecond):
+		close(releaseRead)
+	}
+	if err := <-readDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-saveDone; err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := GetConfig(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultEngine != "baidu" {
+		t.Fatalf("cached default engine = %q, want baidu", cfg.DefaultEngine)
 	}
 }

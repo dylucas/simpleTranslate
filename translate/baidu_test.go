@@ -244,6 +244,32 @@ func TestBaiduLimiterSpacesRequestsAndHonorsCancellation(t *testing.T) {
 	}
 }
 
+func TestBaiduLimiterCancellationDoesNotReserveFutureSlot(t *testing.T) {
+	const interval = 200 * time.Millisecond
+	limiter := newBaiduRequestLimiter(interval)
+	if err := limiter.wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- limiter.wait(ctx) }()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled wait error = %v", err)
+	}
+
+	start := time.Now()
+	if err := limiter.wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(start)
+	if elapsed >= 300*time.Millisecond {
+		t.Fatalf("cancelled waiter reserved a future slot: next request waited %v", elapsed)
+	}
+}
+
 func TestBaiduLiveAPIs(t *testing.T) {
 	if os.Getenv("BAIDU_LIVE_TEST") != "1" {
 		t.Skip("set BAIDU_LIVE_TEST=1 to run live Baidu API probes")

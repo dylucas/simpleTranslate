@@ -119,7 +119,7 @@ func chatCompletionWithAPIKeyContext(ctx context.Context, prompt, apiKey string)
 		return "", fmt.Errorf("读取混元 API 响应失败: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("混元 API 调用失败: HTTP %d: %s", resp.StatusCode, string(data))
+		return "", fmt.Errorf("混元 API 调用失败: HTTP %d: %s", resp.StatusCode, apiErrorExcerpt(string(data)))
 	}
 
 	var result struct {
@@ -137,7 +137,7 @@ func chatCompletionWithAPIKeyContext(ctx context.Context, prompt, apiKey string)
 		return "", err
 	}
 	if result.Error != nil && result.Error.Message != "" {
-		return "", fmt.Errorf("混元 API 错误: %s", result.Error.Message)
+		return "", fmt.Errorf("混元 API 错误: %s", apiErrorExcerpt(result.Error.Message))
 	}
 	if len(result.Choices) == 0 {
 		return "", fmt.Errorf("混元 API 返回为空")

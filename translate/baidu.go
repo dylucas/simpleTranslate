@@ -13,7 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"simpleTranslate/config"
 )
@@ -37,7 +36,7 @@ type BaiduAPIError struct {
 
 func (e *BaiduAPIError) Error() string {
 	if e.Code != "" {
-		return fmt.Sprintf("百度翻译 API 错误 %s: %s", e.Code, e.Message)
+		return fmt.Sprintf("百度翻译 API 错误 %s: %s", e.Code, apiErrorExcerpt(e.Message))
 	}
 	return fmt.Sprintf("百度翻译 API 调用失败: HTTP %d", e.HTTPStatus)
 }
@@ -68,30 +67,29 @@ func (l *baiduRequestLimiter) wait(ctx context.Context) error {
 	if l == nil || l.interval <= 0 {
 		return ctx.Err()
 	}
-	if err := ctx.Err(); err != nil {
-		return err
-	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 
-	now := time.Now()
-	l.mu.Lock()
-	slot := now
-	if l.next.After(slot) {
-		slot = l.next
-	}
-	l.next = slot.Add(l.interval)
-	l.mu.Unlock()
+		l.mu.Lock()
+		now := time.Now()
+		delay := l.next.Sub(now)
+		if delay <= 0 {
+			l.next = now.Add(l.interval)
+			l.mu.Unlock()
+			return nil
+		}
+		l.mu.Unlock()
 
-	delay := time.Until(slot)
-	if delay <= 0 {
-		return nil
-	}
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+			// Another waiter may claim this slot first, so re-check under the lock.
+		}
 	}
 }
 
@@ -171,21 +169,6 @@ func appLanguageCode(code string) string {
 	default:
 		return strings.ToLower(strings.TrimSpace(code))
 	}
-}
-
-func utf8Prefix(value string, maxBytes int) string {
-	if maxBytes <= 0 || len(value) <= maxBytes {
-		return value
-	}
-	end := 0
-	for _, r := range value {
-		size := utf8.RuneLen(r)
-		if end+size > maxBytes {
-			break
-		}
-		end += size
-	}
-	return value[:end]
 }
 
 func (c *baiduClient) postForm(ctx context.Context, endpoint string, form url.Values) ([]byte, error) {
@@ -284,7 +267,7 @@ func (c *baiduClient) translate(ctx context.Context, text, source, target, domai
 		return BaiduTranslation{}, fmt.Errorf("解析百度翻译响应失败: %w", err)
 	}
 	if response.ErrorCode != "" && response.ErrorCode != "52000" && response.ErrorCode != "0" {
-		return BaiduTranslation{}, &BaiduAPIError{Code: string(response.ErrorCode), Message: response.ErrorMsg}
+		return BaiduTranslation{}, &BaiduAPIError{Code: string(response.ErrorCode), Message: apiErrorExcerpt(response.ErrorMsg)}
 	}
 	parts := make([]string, 0, len(response.TransResult))
 	for _, item := range response.TransResult {
@@ -384,7 +367,7 @@ func (c *baiduClient) detect(ctx context.Context, text string, service config.Ba
 		return "", fmt.Errorf("解析百度语种识别响应失败: %w", err)
 	}
 	if response.ErrorCode != "" && response.ErrorCode != "0" {
-		return "", &BaiduAPIError{Code: string(response.ErrorCode), Message: response.ErrorMsg}
+		return "", &BaiduAPIError{Code: string(response.ErrorCode), Message: apiErrorExcerpt(response.ErrorMsg)}
 	}
 	lang := appLanguageCode(response.Data.Source)
 	if lang == "" {

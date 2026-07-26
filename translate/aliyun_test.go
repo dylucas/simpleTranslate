@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	"simpleTranslate/config"
+
+	openapi "github.com/alibabacloud-go/darabonba-openapi/v2/client"
 )
 
 // TestCreateClient_MissingCreds 未配置凭据时应返回明确错误
@@ -25,6 +27,101 @@ func TestCreateClient_PartialCreds(t *testing.T) {
 	_, err := CreateClientWithConfig(config.ServiceConfig{SecretId: "only-id"})
 	if err == nil {
 		t.Error("仅配置 SecretId 期望返回错误")
+	}
+}
+
+func TestNormalizeAliyunService(t *testing.T) {
+	got := normalizeAliyunService(config.ServiceConfig{
+		SecretId:  "  access-id\t",
+		SecretKey: "\naccess-key  ",
+		Region:    " cn-shanghai ",
+	})
+
+	if got.SecretId != "access-id" {
+		t.Errorf("SecretId = %q, want access-id", got.SecretId)
+	}
+	if got.SecretKey != "access-key" {
+		t.Errorf("SecretKey = %q, want access-key", got.SecretKey)
+	}
+	if got.Region != "cn-shanghai" {
+		t.Errorf("Region = %q, want cn-shanghai", got.Region)
+	}
+}
+
+func TestAliyunClientKeyNormalizesEquivalentConfigs(t *testing.T) {
+	plain := aliyunClientKeyForService(config.ServiceConfig{
+		SecretId:  "access-id",
+		SecretKey: "access-key",
+		Region:    "cn-hangzhou",
+	})
+	spaced := aliyunClientKeyForService(config.ServiceConfig{
+		SecretId:  " access-id ",
+		SecretKey: " access-key ",
+		Region:    " https://mt.cn-hangzhou.aliyuncs.com/ ",
+	})
+
+	if plain != spaced {
+		t.Fatalf("equivalent configs produced different keys: %#v != %#v", plain, spaced)
+	}
+}
+
+func TestAliyunClientKeyFieldsCannotCollide(t *testing.T) {
+	left := aliyunClientKeyForService(config.ServiceConfig{
+		SecretId:  "a:b",
+		SecretKey: "c",
+		Region:    "cn-hangzhou",
+	})
+	right := aliyunClientKeyForService(config.ServiceConfig{
+		SecretId:  "a",
+		SecretKey: "b:c",
+		Region:    "cn-hangzhou",
+	})
+
+	if left == right {
+		t.Fatalf("distinct credential fields produced the same key: %#v", left)
+	}
+}
+
+func TestInvalidateAliyunClientIfConfigChanged(t *testing.T) {
+	aliyunClientMu.Lock()
+	originalClient := aliyunClient
+	originalID := aliyunClientID
+	aliyunClientMu.Unlock()
+	defer func() {
+		aliyunClientMu.Lock()
+		aliyunClient = originalClient
+		aliyunClientID = originalID
+		aliyunClientMu.Unlock()
+	}()
+
+	service := config.ServiceConfig{
+		SecretId:  "access-id",
+		SecretKey: "access-key",
+		Region:    "cn-hangzhou",
+	}
+	cachedClient := new(openapi.Client)
+	aliyunClientMu.Lock()
+	aliyunClient = cachedClient
+	aliyunClientID = aliyunClientKeyForService(service)
+	aliyunClientMu.Unlock()
+
+	InvalidateAliyunClientIfConfigChanged(config.ServiceConfig{
+		SecretId:  " access-id ",
+		SecretKey: " access-key ",
+		Region:    "https://mt.cn-hangzhou.aliyuncs.com/",
+	})
+	aliyunClientMu.Lock()
+	preservedClient := aliyunClient
+	aliyunClientMu.Unlock()
+	if preservedClient != cachedClient {
+		t.Fatal("equivalent config should preserve the cached client")
+	}
+
+	InvalidateAliyunClientIfConfigChanged(config.ServiceConfig{})
+	aliyunClientMu.Lock()
+	defer aliyunClientMu.Unlock()
+	if aliyunClient != nil || aliyunClientID != (aliyunClientKey{}) {
+		t.Fatalf("changed config left cached credentials: client=%p key=%#v", aliyunClient, aliyunClientID)
 	}
 }
 
@@ -129,6 +226,18 @@ func TestFlexInt_InvalidInput(t *testing.T) {
 				t.Errorf("期望解析 %q 返回错误，得到 %d", c, int(got))
 			}
 		})
+	}
+}
+
+func TestFlexIntErrorIsBounded(t *testing.T) {
+	data := []byte(`"` + strings.Repeat("x", maxAPIErrorExcerptBytes*2) + `"`)
+	var value flexInt
+	err := json.Unmarshal(data, &value)
+	if err == nil {
+		t.Fatal("invalid flexInt should fail")
+	}
+	if len(err.Error()) > maxAPIErrorExcerptBytes+128 {
+		t.Fatalf("flexInt error is not bounded: %d bytes", len(err.Error()))
 	}
 }
 

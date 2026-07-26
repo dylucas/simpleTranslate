@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 )
 
 // WriteFileAtomic writes data to a temporary file and then replaces path.
@@ -40,5 +41,25 @@ func WriteFileAtomic(path string, data []byte, perm os.FileMode) error {
 	if err := os.Rename(tmpPath, path); err != nil {
 		return fmt.Errorf("replace destination file: %w", err)
 	}
+	if err := syncDirectory(dir); err != nil {
+		return fmt.Errorf("flush destination directory: %w", err)
+	}
 	return nil
+}
+
+func syncDirectory(path string) error {
+	// Windows does not support syncing an opened directory through os.File.
+	// Rename durability is delegated to the platform implementation there.
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	dir, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	if err := dir.Sync(); err != nil {
+		dir.Close()
+		return err
+	}
+	return dir.Close()
 }

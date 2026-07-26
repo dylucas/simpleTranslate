@@ -2,7 +2,10 @@ package translate
 
 import (
 	"bytes"
+	"errors"
+	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestReadAPIResponseLimit(t *testing.T) {
@@ -13,6 +16,56 @@ func TestReadAPIResponseLimit(t *testing.T) {
 	}
 	if _, err := readAPIResponse(bytes.NewReader(append(exact, 'x'))); err == nil {
 		t.Fatal("response above limit should fail")
+	}
+}
+
+func TestReleaseAPIResponseBufferClearsContents(t *testing.T) {
+	buf := new(bytes.Buffer)
+	buf.Write(bytes.Repeat([]byte{0x7f}, maxPooledAPIResponseBufferBytes+1))
+	contents := buf.Bytes()
+
+	releaseAPIResponseBuffer(buf)
+
+	if buf.Len() != 0 {
+		t.Fatalf("released buffer length = %d, want 0", buf.Len())
+	}
+	for i, value := range contents {
+		if value != 0 {
+			t.Fatalf("released buffer byte %d = %d, want 0", i, value)
+		}
+	}
+}
+
+func TestDecodeThroughBufferLimit(t *testing.T) {
+	var decoded map[string]string
+	if err := decodeThroughBuffer(map[string]string{"value": "ok"}, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	if decoded["value"] != "ok" {
+		t.Fatalf("decoded value = %q", decoded["value"])
+	}
+
+	err := decodeThroughBuffer(
+		map[string]string{"value": strings.Repeat("x", maxAPIResponseBytes)},
+		&decoded,
+	)
+	if !errors.Is(err, errAPIResponseTooLarge) {
+		t.Fatalf("oversized SDK response error = %v", err)
+	}
+}
+
+func TestAPIErrorExcerptIsBoundedAndValidUTF8(t *testing.T) {
+	excerpt := apiErrorExcerpt(strings.Repeat("中", maxAPIErrorExcerptBytes))
+	if !utf8.ValidString(excerpt) {
+		t.Fatalf("excerpt is not valid UTF-8: %q", excerpt)
+	}
+	if len(excerpt) > maxAPIErrorExcerptBytes+len("...") || !strings.HasSuffix(excerpt, "...") {
+		t.Fatalf("unexpected excerpt length or suffix: len=%d suffix=%q", len(excerpt), excerpt[len(excerpt)-3:])
+	}
+
+	invalid := apiErrorExcerpt(string([]byte{'a', 0xff, 'b'}))
+	if !utf8.ValidString(invalid) {
+		t.Fatalf("invalid input was not normalized: %q", invalid)
 	}
 }
 

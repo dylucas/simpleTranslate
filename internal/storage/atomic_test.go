@@ -28,3 +28,9 @@ func TestWriteFileAtomic(t *testing.T) {
 		t.Fatalf("permissions = %o, want 600", info.Mode().Perm())
 	}
 }
+
+func TestSyncDirectory(t *testing.T) {
+	if err := syncDirectory(t.TempDir()); err != nil {
+		t.Fatalf("syncDirectory failed: %v", err)
+	}
+}

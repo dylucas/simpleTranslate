@@ -3,6 +3,7 @@ package main
 import (
 	"path/filepath"
 	"simpleTranslate/config"
+	"simpleTranslate/translate"
 )
 
 // CloudConfig 复用 config 包的定义，避免前后端结构体不同步。
@@ -30,6 +31,8 @@ func (a *App) SaveConfig(cfg CloudConfig) error {
 	if err := config.SaveConfig(a.getConfigPath(), cfg); err != nil {
 		return err
 	}
+	translate.InvalidateAliyunClientIfConfigChanged(cfg.Aliyun)
+	a.cacheGeneration.Add(1)
 	if a.translateCache != nil {
 		a.translateCache.clear()
 	}

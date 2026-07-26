@@ -33,6 +33,7 @@
   let lastPanelTrigger: HTMLElement | null = null;
   let queuedErrors: string[] = [];
   let controller: TranslateController;
+  const copyFeedbackTimers = new Map<EngineId | "output", ReturnType<typeof setTimeout>>();
 
   const configController = createConfigController(desktopBridge, (message) => {
     if (controller) controller.showError(message);
@@ -197,17 +198,25 @@
     speaker.speak(text, language, { onChange: (value) => (speakingText = value) });
   }
 
+  function markCopied(engine?: EngineId): void {
+    const key = engine ?? "output";
+    const previous = copyFeedbackTimers.get(key);
+    if (previous) clearTimeout(previous);
+    if (engine) copiedEngines[engine] = true;
+    else copied = true;
+    copyFeedbackTimers.set(key, setTimeout(() => {
+      copyFeedbackTimers.delete(key);
+      if (engine) copiedEngines[engine] = false;
+      else copied = false;
+    }, 1600));
+  }
+
   async function copyText(text: string, engine?: EngineId): Promise<void> {
     if (!text) return;
     try {
       await desktopBridge.setClipboardText(text);
       clipboardWatcher.setBaseline(text);
-      if (engine) copiedEngines[engine] = true;
-      else copied = true;
-      setTimeout(() => {
-        if (engine) copiedEngines[engine] = false;
-        else copied = false;
-      }, 1600);
+      markCopied(engine);
     } catch {
       controller.showError("复制失败，请重试");
     }
@@ -306,6 +315,8 @@
     controller.destroy();
     clipboardWatcher.stop();
     speaker.stop();
+    for (const timer of copyFeedbackTimers.values()) clearTimeout(timer);
+    copyFeedbackTimers.clear();
   });
 </script>
 

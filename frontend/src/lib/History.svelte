@@ -3,6 +3,7 @@
   import { tick } from "svelte";
   import { langs } from "./languages";
   import { ARIA_SHORTCUTS } from "./shortcuts";
+  import { MAX_INPUT_BYTES, truncateUtf8 } from "./textLimits";
   import type { HistoryEntry, HistoryPage, HistoryQuery } from "./types";
 
   interface Props {
@@ -20,8 +21,11 @@
   const SEARCH_DELAY = 250;
   let entries = $state<HistoryEntry[]>([]);
   let total = $state(0);
+  let allTotal = $state(0);
   let hasMore = $state(false);
   let loading = $state(false);
+  let loadFailed = $state(false);
+  let clearing = $state(false);
   let search = $state("");
   let confirming = $state(false);
   let drawer = $state<HTMLElement>();
@@ -35,7 +39,7 @@
   let resultSummary = $derived(search.trim() ? `${total} 条匹配记录` : `${total} 条记录`);
 
   async function loadPage(reset: boolean): Promise<void> {
-    if (!open || loading && !reset) return;
+    if (!open || clearing || loading && !reset) return;
     const requestId = ++requestSequence;
     loading = true;
     try {
@@ -43,9 +47,14 @@
       if (requestId !== requestSequence || !open) return;
       entries = reset ? page.entries : [...entries, ...page.entries];
       total = page.total;
+      allTotal = page.allTotal;
       hasMore = page.hasMore;
+      loadFailed = false;
     } catch {
-      if (requestId === requestSequence) onError("历史记录加载失败");
+      if (requestId === requestSequence) {
+        loadFailed = true;
+        onError("历史记录加载失败");
+      }
     } finally {
       if (requestId === requestSequence) loading = false;
     }
@@ -58,8 +67,10 @@
     observedSearch = "";
     entries = [];
     total = 0;
+    allTotal = 0;
     hasMore = false;
     loading = false;
+    loadFailed = false;
   }
 
   $effect(() => {
@@ -98,30 +109,52 @@
     return langs[normalized] ?? normalized.toUpperCase();
   }
 
+  function updateSearch(value: string): void {
+    search = truncateUtf8(value, MAX_INPUT_BYTES);
+  }
+
   function close(): void {
+    if (clearing) return;
     confirming = false;
     onClose();
   }
 
   function cancelClear(): void {
+    if (clearing) return;
     confirming = false;
     void tick().then(() => clearHistoryButton?.focus());
   }
 
   async function confirmClear(): Promise<void> {
+    if (clearing) return;
+    clearing = true;
+    requestSequence += 1;
+    loading = false;
+    let failed = false;
     try {
       await onClear();
       entries = [];
       total = 0;
+      allTotal = 0;
       hasMore = false;
+      loadFailed = false;
       confirming = false;
-      void tick().then(() => searchInput?.focus());
+      if (open) void tick().then(() => searchInput?.focus());
     } catch {
+      failed = true;
       onError("历史记录清空失败");
+    } finally {
+      clearing = false;
+      if (failed && open) void loadPage(true);
     }
   }
 
   function handleKeydown(event: KeyboardEvent): void {
+    if (clearing) {
+      event.preventDefault();
+      event.stopPropagation();
+      return;
+    }
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
@@ -144,7 +177,7 @@
   }
 
   async function exportHistory(): Promise<void> {
-    if (!total) return;
+    if (!allTotal) return;
     try {
       await onExport();
     } catch {
@@ -159,20 +192,20 @@
 </script>
 
 {#if open}
-  <button class="backdrop" onclick={close} aria-label="关闭历史记录"></button>
+  <button class="backdrop" onclick={close} disabled={clearing} aria-label="关闭历史记录"></button>
   <div class="drawer" bind:this={drawer} role="dialog" aria-modal="true" aria-labelledby="history-title" tabindex="-1" onkeydown={handleKeydown}>
     <header>
       <div class="title"><span><HistoryIcon size={18} /></span><div><h2 id="history-title">历史记录</h2><small aria-live="polite" aria-atomic="true">{resultSummary}</small></div></div>
       <div class="header-actions">
-        <button onclick={() => void exportHistory()} disabled={!total} aria-label="导出历史记录" title="导出 JSON"><Download size={16} /></button>
-        <button bind:this={clearHistoryButton} class="danger" onclick={() => (confirming = true)} disabled={!total} aria-label="清空历史记录" title="清空历史"><Trash2 size={16} /></button>
-        <button onclick={close} aria-label="关闭历史记录" aria-keyshortcuts={ARIA_SHORTCUTS.closePanel} title="关闭"><X size={18} /></button>
+        <button onclick={() => void exportHistory()} disabled={!allTotal || clearing} aria-label="导出历史记录" title="导出 JSON"><Download size={16} /></button>
+        <button bind:this={clearHistoryButton} class="danger" onclick={() => (confirming = true)} disabled={(!allTotal && !loadFailed) || clearing} aria-label="清空历史记录" title="清空历史"><Trash2 size={16} /></button>
+        <button onclick={close} disabled={clearing} aria-label="关闭历史记录" aria-keyshortcuts={ARIA_SHORTCUTS.closePanel} title="关闭"><X size={18} /></button>
       </div>
     </header>
 
     <div class="search">
       <Search size={15} />
-      <input bind:this={searchInput} bind:value={search} placeholder="搜索原文或译文" aria-label="搜索翻译记录" />
+      <input bind:this={searchInput} value={search} oninput={(event) => updateSearch(event.currentTarget.value)} disabled={clearing} placeholder="搜索原文或译文" aria-label="搜索翻译记录" />
       {#if search}<button onclick={() => { search = ""; searchInput?.focus(); }} aria-label="清除搜索" title="清除搜索"><X size={13} /></button>{/if}
     </div>
 
@@ -180,15 +213,15 @@
       <div class="confirm" role="alert">
         <div class="confirm-message"><AlertTriangle size={15} /><span>确定清空全部历史记录？</span></div>
         <div class="confirm-actions">
-          <button bind:this={cancelClearButton} onclick={cancelClear}>取消</button>
-          <button class="danger-solid" onclick={() => void confirmClear()}>确认清空</button>
+          <button bind:this={cancelClearButton} onclick={cancelClear} disabled={clearing}>取消</button>
+          <button class="danger-solid" onclick={() => void confirmClear()} disabled={clearing}>{clearing ? "清空中…" : "确认清空"}</button>
         </div>
       </div>
     {/if}
 
     <div class="history-list" onscroll={handleScroll}>
       {#each entries as item (item)}
-        <button class="history-item" onclick={() => onSelect(item)}>
+        <button class="history-item" onclick={() => onSelect(item)} disabled={clearing}>
           <span class="meta"><span class="route"><span>{languageLabel(item.source)}</span><ArrowRight size={11} /><span>{languageLabel(item.target)}</span></span><time>{item.time}</time></span>
           <span class="entry-content"><strong>{item.input}</strong><span class="output">{item.output}</span></span>
         </button>
@@ -199,7 +232,7 @@
           {#if search}<button class="empty-action" onclick={() => { search = ""; searchInput?.focus(); }}>清除搜索</button>{/if}
         </div>
       {/each}
-      {#if hasMore}<button class="load-more" onclick={() => void loadPage(false)} disabled={loading}>{loading ? "加载中…" : "加载更多"}</button>{/if}
+      {#if hasMore}<button class="load-more" onclick={() => void loadPage(false)} disabled={loading || clearing}>{loading ? "加载中…" : "加载更多"}</button>{/if}
     </div>
   </div>
 {/if}

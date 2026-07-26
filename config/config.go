@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"simpleTranslate/internal/storage"
@@ -47,6 +48,8 @@ type CloudConfig struct {
 const CurrentVersion = 3
 
 const BaiduGeneralDomain = "general"
+
+const maxConfigFileBytes = 1 << 20
 
 var validBaiduDomains = map[string]struct{}{
 	BaiduGeneralDomain: {},
@@ -93,19 +96,22 @@ func DefaultCloudConfig() CloudConfig {
 
 func normalizeConfig(cfg CloudConfig) CloudConfig {
 	cfg.Version = CurrentVersion
-	if cfg.DefaultEngine != "tencent" && cfg.DefaultEngine != "aliyun" && cfg.DefaultEngine != "baidu" {
+	cfg.DefaultEngine = normalizeEngine(cfg.DefaultEngine)
+	if cfg.DefaultEngine == "" {
 		cfg.DefaultEngine = "tencent"
 	}
 	cfg.Baidu.Domain = NormalizeBaiduDomain(cfg.Baidu.Domain)
 	cfg.SourceLanguage = normalizeLanguage(cfg.SourceLanguage, true, "auto")
 	cfg.TargetLanguage = normalizeLanguage(cfg.TargetLanguage, false, "zh")
+	cfg.Aliyun.Region = strings.TrimSpace(cfg.Aliyun.Region)
 	if cfg.Aliyun.Region == "" {
 		cfg.Aliyun.Region = "cn-hangzhou"
 	}
 	seen := map[string]bool{}
 	engines := make([]string, 0, len(cfg.CompareEngines))
 	for _, engine := range cfg.CompareEngines {
-		if (engine == "tencent" || engine == "aliyun" || engine == "baidu") && !seen[engine] {
+		engine = normalizeEngine(engine)
+		if engine != "" && !seen[engine] {
 			engines = append(engines, engine)
 			seen[engine] = true
 		}
@@ -115,6 +121,16 @@ func normalizeConfig(cfg CloudConfig) CloudConfig {
 	}
 	cfg.CompareEngines = engines
 	return cfg
+}
+
+func normalizeEngine(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch value {
+	case "tencent", "aliyun", "baidu":
+		return value
+	default:
+		return ""
+	}
 }
 
 func normalizeLanguage(value string, allowAuto bool, fallback string) string {
@@ -138,10 +154,34 @@ func normalizeLanguage(value string, allowAuto bool, fallback string) string {
 
 // 进程内配置缓存：避免每次翻译都从磁盘读取，SaveConfig 时同步刷新。
 var (
-	cacheMu    sync.RWMutex
-	cached     *CloudConfig
-	cachedPath string
+	cacheMu        sync.RWMutex
+	cached         *CloudConfig
+	cachedPath     string
+	readConfigFile = readConfigFileBounded
 )
+
+func readConfigFileBounded(path string) ([]byte, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.Size() > maxConfigFileBytes {
+		return nil, fmt.Errorf("配置文件超过 %d 字节限制", maxConfigFileBytes)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, maxConfigFileBytes+1))
+	if err != nil {
+		return nil, err
+	}
+	if len(data) > maxConfigFileBytes {
+		return nil, fmt.Errorf("配置文件超过 %d 字节限制", maxConfigFileBytes)
+	}
+	return data, nil
+}
 
 // GetConfigPath 返回配置文件路径，目录不存在时自动创建。
 // Deprecated: 新代码应显式传入配置路径，避免隐式读写用户目录。
@@ -167,12 +207,19 @@ func GetConfig(path string) (CloudConfig, error) {
 	}
 	cacheMu.RUnlock()
 
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
+	// A save or another cache miss may have completed while this caller waited.
+	if cached != nil && cachedPath == path {
+		return cloneConfig(*cached), nil
+	}
+
 	cfg := DefaultCloudConfig()
-	data, err := os.ReadFile(path)
+	data, err := readConfigFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			cfg = normalizeConfig(cfg)
-			updateCache(path, cfg)
+			updateCacheLocked(path, cfg)
 			return cloneConfig(cfg), nil
 		}
 		return cfg, fmt.Errorf("读取配置文件失败: %w", err)
@@ -182,7 +229,7 @@ func GetConfig(path string) (CloudConfig, error) {
 	}
 
 	cfg = normalizeConfig(cfg)
-	updateCache(path, cfg)
+	updateCacheLocked(path, cfg)
 	return cfg, nil
 }
 
@@ -193,18 +240,21 @@ func SaveConfig(path string, cfg CloudConfig) error {
 	if err != nil {
 		return fmt.Errorf("序列化失败: %w", err)
 	}
+	if len(data) > maxConfigFileBytes {
+		return fmt.Errorf("配置文件超过 %d 字节限制", maxConfigFileBytes)
+	}
+	cacheMu.Lock()
+	defer cacheMu.Unlock()
 	if err := storage.WriteFileAtomic(path, data, 0600); err != nil {
 		return fmt.Errorf("写入文件失败: %w", err)
 	}
 
-	updateCache(path, cfg)
+	updateCacheLocked(path, cfg)
 	return nil
 }
 
-// updateCache 写入缓存（拷贝一份，避免外部修改污染缓存）。
-func updateCache(path string, cfg CloudConfig) {
-	cacheMu.Lock()
-	defer cacheMu.Unlock()
+// updateCacheLocked writes a defensive copy while cacheMu is held.
+func updateCacheLocked(path string, cfg CloudConfig) {
 	cfgCopy := cloneConfig(cfg)
 	cached = &cfgCopy
 	cachedPath = path

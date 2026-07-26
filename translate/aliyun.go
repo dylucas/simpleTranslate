@@ -23,8 +23,14 @@ const defaultAliyunEndpoint = "mt.cn-hangzhou.aliyuncs.com"
 var (
 	aliyunClientMu sync.Mutex
 	aliyunClient   *openapi.Client
-	aliyunCredsSig string // secretId+secretKey+region 的签名，用于感知凭据变更
+	aliyunClientID aliyunClientKey
 )
+
+type aliyunClientKey struct {
+	SecretID  string
+	SecretKey string
+	Endpoint  string
+}
 
 // CreateClient 获取或构建阿里云 openapi.Client。
 // 当凭据签名未变化时直接复用缓存的客户端，避免重复初始化开销。
@@ -38,15 +44,16 @@ func CreateClient() (*openapi.Client, error) {
 }
 
 func CreateClientWithConfig(service config.ServiceConfig) (*openapi.Client, error) {
-	if strings.TrimSpace(service.SecretId) == "" || strings.TrimSpace(service.SecretKey) == "" {
+	service = normalizeAliyunService(service)
+	if service.SecretId == "" || service.SecretKey == "" {
 		return nil, fmt.Errorf("未配置阿里云 AccessKey，请在设置中填写")
 	}
 
-	credsSig := service.SecretId + ":" + service.SecretKey + ":" + service.Region
+	clientID := aliyunClientKeyForService(service)
 
 	aliyunClientMu.Lock()
 	defer aliyunClientMu.Unlock()
-	if aliyunClient != nil && aliyunCredsSig == credsSig {
+	if aliyunClient != nil && aliyunClientID == clientID {
 		return aliyunClient, nil
 	}
 
@@ -60,7 +67,7 @@ func CreateClientWithConfig(service config.ServiceConfig) (*openapi.Client, erro
 	}
 
 	ecsConfig := &openapi.Config{}
-	ecsConfig.Endpoint = tea.String(aliyunEndpoint(service.Region))
+	ecsConfig.Endpoint = tea.String(clientID.Endpoint)
 	ecsConfig.Credential = credentialClient
 
 	client, err := openapi.NewClient(ecsConfig)
@@ -69,8 +76,38 @@ func CreateClientWithConfig(service config.ServiceConfig) (*openapi.Client, erro
 	}
 
 	aliyunClient = client
-	aliyunCredsSig = credsSig
+	aliyunClientID = clientID
 	return client, nil
+}
+
+func normalizeAliyunService(service config.ServiceConfig) config.ServiceConfig {
+	service.SecretId = strings.TrimSpace(service.SecretId)
+	service.SecretKey = strings.TrimSpace(service.SecretKey)
+	service.Region = strings.TrimSpace(service.Region)
+	return service
+}
+
+func aliyunClientKeyForService(service config.ServiceConfig) aliyunClientKey {
+	service = normalizeAliyunService(service)
+	return aliyunClientKey{
+		SecretID:  service.SecretId,
+		SecretKey: service.SecretKey,
+		Endpoint:  aliyunEndpoint(service.Region),
+	}
+}
+
+// InvalidateAliyunClientIfConfigChanged releases credentials retained by the
+// cached SDK client when the persisted Aliyun settings no longer match. Calls
+// for unrelated configuration saves preserve the reusable client.
+func InvalidateAliyunClientIfConfigChanged(service config.ServiceConfig) {
+	configuredKey := aliyunClientKeyForService(service)
+	aliyunClientMu.Lock()
+	defer aliyunClientMu.Unlock()
+	if aliyunClientID == configuredKey {
+		return
+	}
+	aliyunClient = nil
+	aliyunClientID = aliyunClientKey{}
 }
 
 // aliyunEndpoint accepts either a region (for example cn-hangzhou) or a full
@@ -165,7 +202,7 @@ func (f *flexInt) UnmarshalJSON(data []byte) error {
 	}
 	n, err := strconv.Atoi(strings.TrimSpace(s))
 	if err != nil {
-		return fmt.Errorf("flexInt: 无法解析 %q: %w", string(data), err)
+		return fmt.Errorf("flexInt: 无法解析 %q", apiErrorExcerpt(string(data)))
 	}
 	*f = flexInt(n)
 	return nil
@@ -297,7 +334,7 @@ func validateTranslateResponse(result APIResponse) error {
 	}
 	if int(result.Body.Code) != 200 {
 		if result.Body.Message != "" {
-			return fmt.Errorf("阿里云翻译失败: Code %d: %s", result.Body.Code, result.Body.Message)
+			return fmt.Errorf("阿里云翻译失败: Code %d: %s", result.Body.Code, apiErrorExcerpt(result.Body.Message))
 		}
 		return fmt.Errorf("阿里云翻译失败: Code %d", result.Body.Code)
 	}

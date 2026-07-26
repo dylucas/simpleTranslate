@@ -138,7 +138,7 @@ func BenchmarkCacheKey(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = cacheKey("baidu", "general", "zh", "en", text)
+		_ = versionedCacheKey(1, "baidu", "general", "zh", "en", text)
 	}
 }
 

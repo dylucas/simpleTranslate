@@ -234,6 +234,8 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
         const allFailed = successful.length === 0;
         const allCancelled = values.length > 0 && values.every((result) => result?.errorCode === ErrorCodes.Cancelled);
         const hasFailures = successful.length < engines.length;
+        const resolvedTarget = response.target || target;
+        if (!allFailed) deps.setTarget(resolvedTarget);
 
         state.update((current) => ({
           ...current,
@@ -244,7 +246,7 @@ export function createTranslateController(deps: TranslateControllerDeps): Transl
           status: allCancelled ? "已取消" : allFailed ? "翻译失败" : hasFailures ? "部分引擎失败" : "完成",
         }));
         if (allFailed && !allCancelled) showError(failed[0] ?? "翻译服务未返回结果");
-        else if (!allCancelled) addHistory(input, output, source, response.target || target);
+        else if (!allCancelled) addHistory(input, output, source, resolvedTarget);
 
         if (source === "auto" && response.autoSrc) {
           state.update((current) => ({

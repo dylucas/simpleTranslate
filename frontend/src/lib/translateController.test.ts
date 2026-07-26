@@ -25,6 +25,7 @@ function createHarness(bridge: DesktopBridge, compareMode = false) {
     controller,
     setInput: (value: string) => { input = value; },
     setTarget: (value: string) => { target = value; },
+    getTarget: () => target,
     getHistory: () => history,
   };
 }
@@ -228,6 +229,31 @@ describe("translate controller", () => {
     expect(get(controller.state).output).toBe("你好");
     expect(history).toHaveLength(1);
     controller.destroy();
+  });
+
+  it("applies the backend target adjustment after a compare success", async () => {
+    const bridge: DesktopBridge = {
+      ...createMockBridge(),
+      async translateMulti(request) {
+        return {
+          requestId: request.requestId,
+          source: request.source,
+          autoSrc: request.source,
+          target: "zh",
+          results: {
+            tencent: { requestId: request.requestId, engine: "tencent", text: "你好" },
+          },
+        };
+      },
+    };
+    const harness = createHarness(bridge, true);
+    harness.setTarget("en");
+
+    await harness.controller.translate();
+
+    expect(harness.getTarget()).toBe("zh");
+    expect(harness.getHistory()[0]).toMatchObject({ target: "zh", output: "你好" });
+    harness.controller.destroy();
   });
 
   it("discards an in-flight response and restarts when request parameters change", async () => {

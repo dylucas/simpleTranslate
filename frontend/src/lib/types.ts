@@ -114,6 +114,7 @@ export interface HistoryQuery {
 export interface HistoryPage {
   entries: HistoryEntry[];
   total: number;
+  allTotal: number;
   hasMore: boolean;
 }
 
