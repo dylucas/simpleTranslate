@@ -205,7 +205,7 @@
 
     <div class="search">
       <Search size={15} />
-      <input bind:this={searchInput} value={search} oninput={(event) => updateSearch(event.currentTarget.value)} disabled={clearing} placeholder="搜索原文或译文" aria-label="搜索翻译记录" />
+      <input bind:this={searchInput} value={search} oninput={(event) => updateSearch(event.currentTarget.value)} disabled={clearing} placeholder="搜索原文或译文" aria-label="搜索翻译记录" autocomplete="off" />
       {#if search}<button onclick={() => { search = ""; searchInput?.focus(); }} aria-label="清除搜索" title="清除搜索"><X size={13} /></button>{/if}
     </div>
 

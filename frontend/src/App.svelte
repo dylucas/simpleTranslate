@@ -366,7 +366,7 @@
           <div class="pane-title"><span class="pane-icon"><TextCursorInput size={14} /></span><span class="pane-label">输入</span><h2 id="source-title">原文</h2></div>
           <span class="char-count">{inputBytes} / {MAX_INPUT_BYTES} 字节</span>
         </header>
-        <textarea class="editor" bind:this={inputElement} value={input} oninput={(event) => updateInput(event.currentTarget.value)} placeholder="输入要翻译的文本" aria-label="原文" aria-keyshortcuts={ARIA_SHORTCUTS.focusInput} spellcheck="false"></textarea>
+        <textarea class="editor" bind:this={inputElement} value={input} oninput={(event) => updateInput(event.currentTarget.value)} placeholder="输入要翻译的文本" aria-label="原文" aria-keyshortcuts={ARIA_SHORTCUTS.focusInput} autocomplete="off" spellcheck="false"></textarea>
         <footer class="pane-footer">
           <span class="pane-note">{config.autoTranslate ? "自动翻译" : "手动翻译"}</span>
           <div class="pane-actions">

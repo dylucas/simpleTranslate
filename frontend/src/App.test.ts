@@ -26,6 +26,7 @@ describe("standalone app", () => {
     expect(screen.getByRole("button", { name: "百度" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "自动翻译" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByRole("textbox", { name: "原文" })).toHaveAttribute("aria-keyshortcuts", ARIA_SHORTCUTS.focusInput);
+    expect(screen.getByRole("textbox", { name: "原文" })).toHaveAttribute("autocomplete", "off");
     expect(screen.getByRole("button", { name: "识别语言后即可交换" })).toHaveAttribute("aria-keyshortcuts", ARIA_SHORTCUTS.swapLanguages);
     expect(screen.getByRole("button", { name: "翻译" })).toHaveAttribute("aria-keyshortcuts", ARIA_SHORTCUTS.translate);
     expect(screen.getByRole("button", { name: "打开历史记录" })).toHaveAttribute("aria-keyshortcuts", ARIA_SHORTCUTS.toggleHistory);

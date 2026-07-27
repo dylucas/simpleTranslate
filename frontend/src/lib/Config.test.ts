@@ -4,6 +4,20 @@ import { DEFAULT_CONFIG } from "./bridge";
 import Config from "./Config.svelte";
 
 describe("settings draft", () => {
+  it("disables browser autofill for service credentials", () => {
+    const { container } = render(Config, {
+      open: true,
+      config: DEFAULT_CONFIG,
+      onClose: vi.fn(),
+      onSave: vi.fn(async () => undefined),
+      onTest: vi.fn(async () => undefined),
+    });
+
+    const inputs = [...container.querySelectorAll("input")];
+    expect(inputs).toHaveLength(6);
+    for (const input of inputs) expect(input).toHaveAttribute("autocomplete", "off");
+  });
+
   it("tests draft credentials without saving them", async () => {
     const onSave = vi.fn(async () => undefined);
     const onTest = vi.fn(async () => undefined);

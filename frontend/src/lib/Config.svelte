@@ -146,7 +146,7 @@
       <section class="settings-section">
         <h3><Cloud size={15} />腾讯混元 hy-mt2-pro</h3>
         <div class="fields">
-          <label><span>API Key</span><div class="input-wrap"><KeyRound size={15} /><input type={showTencentKey ? "text" : "password"} value={draft.tencent.secretKey} oninput={(event) => updateService("tencent", "secretKey", event.currentTarget.value)} placeholder="TokenHub API Key (sk-...)" /><button type="button" onclick={() => (showTencentKey = !showTencentKey)} aria-label="显示或隐藏腾讯 API Key">{#if showTencentKey}<EyeOff size={15} />{:else}<Eye size={15} />{/if}</button></div></label>
+          <label><span>API Key</span><div class="input-wrap"><KeyRound size={15} /><input type={showTencentKey ? "text" : "password"} value={draft.tencent.secretKey} oninput={(event) => updateService("tencent", "secretKey", event.currentTarget.value)} placeholder="TokenHub API Key (sk-...)" autocomplete="off" /><button type="button" onclick={() => (showTencentKey = !showTencentKey)} aria-label="显示或隐藏腾讯 API Key">{#if showTencentKey}<EyeOff size={15} />{:else}<Eye size={15} />{/if}</button></div></label>
         </div>
         <div class="test-row">
           <button class="test-btn" onclick={() => void test("tencent")} disabled={connection.tencent?.testing || !draft.tencent.secretKey.trim()} aria-label="测试腾讯混元连接">
@@ -159,9 +159,9 @@
       <section class="settings-section">
         <h3><Cloud size={15} />阿里云机器翻译</h3>
         <div class="fields two-columns">
-          <label><span>AccessKey ID</span><div class="input-wrap"><KeyRound size={15} /><input type={showAliyunId ? "text" : "password"} value={draft.aliyun.secretId} oninput={(event) => updateService("aliyun", "secretId", event.currentTarget.value)} /><button type="button" onclick={() => (showAliyunId = !showAliyunId)} aria-label="显示或隐藏 AccessKey ID">{#if showAliyunId}<EyeOff size={15} />{:else}<Eye size={15} />{/if}</button></div></label>
-          <label><span>AccessKey Secret</span><div class="input-wrap"><KeyRound size={15} /><input type={showAliyunKey ? "text" : "password"} value={draft.aliyun.secretKey} oninput={(event) => updateService("aliyun", "secretKey", event.currentTarget.value)} /><button type="button" onclick={() => (showAliyunKey = !showAliyunKey)} aria-label="显示或隐藏 AccessKey Secret">{#if showAliyunKey}<EyeOff size={15} />{:else}<Eye size={15} />{/if}</button></div></label>
-          <label class="endpoint"><span>服务地域或地址</span><div class="input-wrap"><Globe size={15} /><input value={draft.aliyun.region} oninput={(event) => updateService("aliyun", "region", event.currentTarget.value)} placeholder="cn-hangzhou" /></div></label>
+          <label><span>AccessKey ID</span><div class="input-wrap"><KeyRound size={15} /><input type={showAliyunId ? "text" : "password"} value={draft.aliyun.secretId} oninput={(event) => updateService("aliyun", "secretId", event.currentTarget.value)} autocomplete="off" /><button type="button" onclick={() => (showAliyunId = !showAliyunId)} aria-label="显示或隐藏 AccessKey ID">{#if showAliyunId}<EyeOff size={15} />{:else}<Eye size={15} />{/if}</button></div></label>
+          <label><span>AccessKey Secret</span><div class="input-wrap"><KeyRound size={15} /><input type={showAliyunKey ? "text" : "password"} value={draft.aliyun.secretKey} oninput={(event) => updateService("aliyun", "secretKey", event.currentTarget.value)} autocomplete="off" /><button type="button" onclick={() => (showAliyunKey = !showAliyunKey)} aria-label="显示或隐藏 AccessKey Secret">{#if showAliyunKey}<EyeOff size={15} />{:else}<Eye size={15} />{/if}</button></div></label>
+          <label class="endpoint"><span>服务地域或地址</span><div class="input-wrap"><Globe size={15} /><input value={draft.aliyun.region} oninput={(event) => updateService("aliyun", "region", event.currentTarget.value)} placeholder="cn-hangzhou" autocomplete="off" /></div></label>
         </div>
         <div class="test-row">
           <button class="test-btn" onclick={() => void test("aliyun")} disabled={connection.aliyun?.testing || !draft.aliyun.secretId.trim() || !draft.aliyun.secretKey.trim()} aria-label="测试阿里云连接">
@@ -174,8 +174,8 @@
       <section class="settings-section">
         <h3><Cloud size={15} />百度翻译</h3>
         <div class="fields two-columns">
-          <label><span>APP ID</span><div class="input-wrap"><KeyRound size={15} /><input type={showBaiduId ? "text" : "password"} value={draft.baidu.appId} oninput={(event) => updateBaidu("appId", event.currentTarget.value)} /><button type="button" onclick={() => (showBaiduId = !showBaiduId)} aria-label="显示或隐藏百度 APP ID">{#if showBaiduId}<EyeOff size={15} />{:else}<Eye size={15} />{/if}</button></div></label>
-          <label><span>密钥</span><div class="input-wrap"><KeyRound size={15} /><input type={showBaiduKey ? "text" : "password"} value={draft.baidu.secretKey} oninput={(event) => updateBaidu("secretKey", event.currentTarget.value)} /><button type="button" onclick={() => (showBaiduKey = !showBaiduKey)} aria-label="显示或隐藏百度密钥">{#if showBaiduKey}<EyeOff size={15} />{:else}<Eye size={15} />{/if}</button></div></label>
+          <label><span>APP ID</span><div class="input-wrap"><KeyRound size={15} /><input type={showBaiduId ? "text" : "password"} value={draft.baidu.appId} oninput={(event) => updateBaidu("appId", event.currentTarget.value)} autocomplete="off" /><button type="button" onclick={() => (showBaiduId = !showBaiduId)} aria-label="显示或隐藏百度 APP ID">{#if showBaiduId}<EyeOff size={15} />{:else}<Eye size={15} />{/if}</button></div></label>
+          <label><span>密钥</span><div class="input-wrap"><KeyRound size={15} /><input type={showBaiduKey ? "text" : "password"} value={draft.baidu.secretKey} oninput={(event) => updateBaidu("secretKey", event.currentTarget.value)} autocomplete="off" /><button type="button" onclick={() => (showBaiduKey = !showBaiduKey)} aria-label="显示或隐藏百度密钥">{#if showBaiduKey}<EyeOff size={15} />{:else}<Eye size={15} />{/if}</button></div></label>
           <label><span>翻译领域</span><span class="select-wrap"><select value={draft.baidu.domain} onchange={(event) => updateBaidu("domain", event.currentTarget.value as BaiduDomain)} aria-label="百度翻译领域">
             {#each BAIDU_DOMAIN_OPTIONS as option}<option value={option.value}>{option.label}</option>{/each}
           </select><ChevronDown size={15} /></span></label>
