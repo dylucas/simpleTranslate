@@ -588,6 +588,20 @@ func TestSaveHistory_EmptyList(t *testing.T) {
 	}
 }
 
+func TestSaveHistoryRejectsOversizedEntry(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	err := app.saveHistory([]HistoryEntry{{
+		Input:  "hello",
+		Output: strings.Repeat("x", maxHistoryOutputBytes+1),
+	}})
+	if err == nil || !strings.Contains(err.Error(), "第 1 条无效") {
+		t.Fatalf("oversized history save error = %v", err)
+	}
+	if _, statErr := os.Stat(app.getHistoryPath()); !os.IsNotExist(statErr) {
+		t.Fatalf("invalid history should not be written, stat error = %v", statErr)
+	}
+}
+
 // TestLoadHistory_InvalidJSON 损坏的 JSON 文件应返回错误
 func TestLoadHistory_InvalidJSON(t *testing.T) {
 	app := NewAppWithDataDir(t.TempDir())
@@ -675,6 +689,55 @@ func TestLoadHistoryValidatesEntriesBeyondRetentionLimit(t *testing.T) {
 
 	if _, err := app.loadHistory(); err == nil {
 		t.Fatal("malformed entry beyond retention limit should be rejected")
+	}
+}
+
+func TestLoadHistoryRejectsOversizedEntryFields(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(*HistoryEntry)
+	}{
+		{name: "input", mutate: func(entry *HistoryEntry) { entry.Input = strings.Repeat("x", maxInputBytes+1) }},
+		{name: "output", mutate: func(entry *HistoryEntry) { entry.Output = strings.Repeat("x", maxHistoryOutputBytes+1) }},
+		{name: "source", mutate: func(entry *HistoryEntry) { entry.Source = strings.Repeat("x", maxHistoryLanguageBytes+1) }},
+		{name: "target", mutate: func(entry *HistoryEntry) { entry.Target = strings.Repeat("x", maxHistoryLanguageBytes+1) }},
+		{name: "time", mutate: func(entry *HistoryEntry) { entry.Time = strings.Repeat("x", maxHistoryTimeBytes+1) }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			app := NewAppWithDataDir(t.TempDir())
+			entry := HistoryEntry{Input: "hello", Output: "output", Source: "en", Target: "zh", Time: "now"}
+			tt.mutate(&entry)
+			data, err := json.Marshal([]HistoryEntry{entry})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(app.getHistoryPath(), data, 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := app.loadHistory(); err == nil || !strings.Contains(err.Error(), "第 1 条无效") {
+				t.Fatalf("oversized %s error = %v", tt.name, err)
+			}
+		})
+	}
+}
+
+func TestLoadHistoryValidatesOversizedDiscardedEntry(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	entries := make([]HistoryEntry, historyEntryLimit+1)
+	for i := range entries {
+		entries[i].Input = "valid"
+	}
+	entries[historyEntryLimit].Output = strings.Repeat("x", maxHistoryOutputBytes+1)
+	data, err := json.Marshal(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(app.getHistoryPath(), data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := app.loadHistory(); err == nil || !strings.Contains(err.Error(), "第 201 条无效") {
+		t.Fatalf("oversized discarded entry error = %v", err)
 	}
 }
 
@@ -837,6 +900,25 @@ func TestExportHistoryCancelAndSuccess(t *testing.T) {
 	}
 	if data, err := os.ReadFile(path); err != nil || !bytes.Contains(data, []byte("hello")) {
 		t.Fatalf("export data=%q err=%v", data, err)
+	}
+}
+
+func TestExportHistoryReportsWriteFailureAsNotExported(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	if _, err := app.AppendHistory(HistoryEntry{ID: 1, Input: "hello", Output: "你好", Source: "en", Target: "zh"}); err != nil {
+		t.Fatal(err)
+	}
+	directoryPath := t.TempDir()
+	app.saveFileDialog = func(context.Context, runtime.SaveDialogOptions) (string, error) {
+		return directoryPath, nil
+	}
+
+	exported, err := app.ExportHistory()
+	if err == nil {
+		t.Fatal("exporting over a directory should fail")
+	}
+	if exported {
+		t.Fatal("failed export should not report success")
 	}
 }
 

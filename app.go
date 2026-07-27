@@ -907,10 +907,15 @@ func decodeHistory(reader io.Reader) ([]HistoryEntry, error) {
 	}
 
 	entries := make([]HistoryEntry, 0, historyEntryLimit)
+	entryIndex := 0
 	for decoder.More() {
 		var entry HistoryEntry
 		if err := decoder.Decode(&entry); err != nil {
 			return nil, err
+		}
+		entryIndex++
+		if err := validateHistoryEntryBounds(entry); err != nil {
+			return nil, fmt.Errorf("历史记录第 %d 条无效: %w", entryIndex, err)
 		}
 		if len(entries) < historyEntryLimit {
 			entries = append(entries, entry)
@@ -927,6 +932,22 @@ func decodeHistory(reader io.Reader) ([]HistoryEntry, error) {
 		return nil, err
 	}
 	return entries, nil
+}
+
+func validateHistoryEntryBounds(entry HistoryEntry) error {
+	if len(entry.Input) > maxInputBytes {
+		return fmt.Errorf("历史原文不能超过 %d 个 UTF-8 字节", maxInputBytes)
+	}
+	if len(entry.Output) > maxHistoryOutputBytes {
+		return fmt.Errorf("历史译文不能超过 %d 个 UTF-8 字节", maxHistoryOutputBytes)
+	}
+	if len(entry.Source) > maxHistoryLanguageBytes || len(entry.Target) > maxHistoryLanguageBytes {
+		return fmt.Errorf("历史语言代码不能超过 %d 个 UTF-8 字节", maxHistoryLanguageBytes)
+	}
+	if len(entry.Time) > maxHistoryTimeBytes {
+		return fmt.Errorf("历史时间标签不能超过 %d 个 UTF-8 字节", maxHistoryTimeBytes)
+	}
+	return nil
 }
 
 func requireJSONEOF(decoder *json.Decoder) error {
@@ -951,6 +972,11 @@ func (a *App) saveHistory(entries []HistoryEntry) error {
 func (a *App) saveHistoryUnlocked(entries []HistoryEntry) error {
 	if len(entries) > historyEntryLimit {
 		entries = entries[:historyEntryLimit]
+	}
+	for i, entry := range entries {
+		if err := validateHistoryEntryBounds(entry); err != nil {
+			return fmt.Errorf("历史记录第 %d 条无效: %w", i+1, err)
+		}
 	}
 	path := a.getHistoryPath()
 	data, err := json.MarshalIndent(entries, "", "  ")
@@ -1011,17 +1037,11 @@ func (a *App) QueryHistory(query HistoryQuery) (HistoryPage, error) {
 
 // AppendHistory atomically prepends a non-duplicate entry and keeps 200 items.
 func (a *App) AppendHistory(entry HistoryEntry) (bool, error) {
-	if strings.TrimSpace(entry.Input) == "" || len(entry.Input) > maxInputBytes {
+	if err := validateHistoryEntryBounds(entry); err != nil {
+		return false, err
+	}
+	if strings.TrimSpace(entry.Input) == "" {
 		return false, fmt.Errorf("历史原文必须为 1-%d 个 UTF-8 字节", maxInputBytes)
-	}
-	if len(entry.Output) > maxHistoryOutputBytes {
-		return false, fmt.Errorf("历史译文不能超过 %d 个 UTF-8 字节", maxHistoryOutputBytes)
-	}
-	if len(entry.Source) > maxHistoryLanguageBytes || len(entry.Target) > maxHistoryLanguageBytes {
-		return false, fmt.Errorf("历史语言代码不能超过 %d 个 UTF-8 字节", maxHistoryLanguageBytes)
-	}
-	if len(entry.Time) > maxHistoryTimeBytes {
-		return false, fmt.Errorf("历史时间标签不能超过 %d 个 UTF-8 字节", maxHistoryTimeBytes)
 	}
 	a.historyMu.Lock()
 	defer a.historyMu.Unlock()
@@ -1075,7 +1095,10 @@ func (a *App) ExportHistory() (bool, error) {
 	if strings.TrimSpace(path) == "" {
 		return false, nil
 	}
-	return true, storage.WriteFileAtomic(path, data, 0600)
+	if err := storage.WriteFileAtomic(path, data, 0600); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // CacheStats 缓存运行时统计，供内存监控端点返回。
