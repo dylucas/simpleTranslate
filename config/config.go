@@ -41,7 +41,7 @@ type CloudConfig struct {
 	// Multi-engine compare
 	CompareMode    bool     `json:"compareMode"`
 	CompareEngines []string `json:"compareEngines"`
-	// 剪贴板监听：开启后自动翻译复制的内容
+	// 打开时读取剪贴板：开启后在界面激活时读取并翻译剪贴板文本
 	ClipboardWatch bool `json:"clipboardWatch"`
 }
 

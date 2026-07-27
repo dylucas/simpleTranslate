@@ -2,7 +2,7 @@
   import { AlertCircle, Check, Copy, CornerDownLeft, Languages, Square, TextCursorInput, Volume2, X } from "@lucide/svelte";
   import { onDestroy, onMount, tick } from "svelte";
   import { desktopBridge } from "./lib/bridge";
-  import { createClipboardWatcher } from "./lib/clipboard";
+  import { createClipboardReader } from "./lib/clipboard";
   import { createConfigController, normalizeConfig } from "./lib/configController";
   import { engineLabel, isEngineConfigured } from "./lib/engines";
   import { langs, getSpeechLang } from "./lib/languages";
@@ -41,6 +41,7 @@
   });
   let config = $derived($configController.value);
   let configReady = $derived($configController.ready);
+  let clipboardReadEnabled = $derived(configReady && config.clipboardWatch);
 
   $effect(() => {
     if (!configReady) return;
@@ -103,7 +104,7 @@
   });
 
   const speaker = createSpeaker(getSpeechLang);
-  const clipboardWatcher = createClipboardWatcher({
+  const clipboardReader = createClipboardReader({
     getText: () => desktopBridge.getClipboardText(),
     isBusy: () => translation.isProcessing,
     onText: (text) => {
@@ -117,8 +118,8 @@
   });
 
   $effect(() => {
-    if (config.clipboardWatch) clipboardWatcher.start();
-    else clipboardWatcher.stop();
+    if (clipboardReadEnabled) void clipboardReader.read();
+    else clipboardReader.cancel();
   });
 
   $effect(() => {
@@ -215,7 +216,7 @@
     if (!text) return;
     try {
       await desktopBridge.setClipboardText(text);
-      clipboardWatcher.setBaseline(text);
+      clipboardReader.setBaseline(text);
       markCopied(engine);
     } catch {
       controller.showError("复制失败，请重试");
@@ -279,6 +280,10 @@
     shortcuts(event);
   }
 
+  function handleWindowFocus(): void {
+    if (clipboardReadEnabled) void clipboardReader.read();
+  }
+
   function restoreHistoryEntry(entry: HistoryEntry): void {
     const route = normalizeConfig({
       sourceLanguage: entry.source,
@@ -313,14 +318,14 @@
 
   onDestroy(() => {
     controller.destroy();
-    clipboardWatcher.stop();
+    clipboardReader.cancel();
     speaker.stop();
     for (const timer of copyFeedbackTimers.values()) clearTimeout(timer);
     copyFeedbackTimers.clear();
   });
 </script>
 
-<svelte:window onkeydown={handleGlobalKeydown} />
+<svelte:window onfocus={handleWindowFocus} onkeydown={handleGlobalKeydown} />
 
 <div class="app-shell" class:light-mode={!config.isDark} class:history-open={showHistory}>
   <ErrorToast errorToast={translation.errorToast} onRetry={() => controller.retry()} onSettings={() => { controller.dismissError(); openPanel("config"); }} onDismiss={() => controller.dismissError()} />

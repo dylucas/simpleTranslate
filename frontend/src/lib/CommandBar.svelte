@@ -78,7 +78,7 @@
 
     <div class="mode-toggles" role="group" aria-label="翻译模式">
       <button class:active={autoTranslate} aria-pressed={autoTranslate} aria-label="自动翻译" onclick={() => onAuto(!autoTranslate)} title="自动翻译"><Zap size={14} /><span>自动</span></button>
-      <button class:active={clipboardWatch} aria-pressed={clipboardWatch} aria-label="剪贴板监听" onclick={onClipboard} title="剪贴板监听"><Clipboard size={14} /><span>剪贴板</span></button>
+      <button class:active={clipboardWatch} aria-pressed={clipboardWatch} aria-label="打开时读取剪贴板" onclick={onClipboard} title="打开时读取剪贴板"><Clipboard size={14} /><span>读取</span></button>
       <button class:active={compareMode} aria-pressed={compareMode} aria-label="多引擎对照" onclick={onCompare} title="多引擎对照"><Columns2 size={14} /><span>对照</span></button>
     </div>
 

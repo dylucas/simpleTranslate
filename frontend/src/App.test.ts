@@ -34,6 +34,88 @@ describe("standalone app", () => {
     expect(screen.queryByRole("button", { name: "收起侧边栏" })).not.toBeInTheDocument();
   });
 
+  it("reads and translates the clipboard when the enabled app opens", async () => {
+    await desktopBridge.saveConfig({
+      ...DEFAULT_CONFIG,
+      autoTranslate: false,
+      clipboardWatch: true,
+      tencent: { ...DEFAULT_CONFIG.tencent, secretKey: "sk-test" },
+    });
+    const getClipboardText = vi.spyOn(desktopBridge, "getClipboardText").mockResolvedValue("hello");
+    const translateText = vi.spyOn(desktopBridge, "translateText");
+
+    render(App);
+
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "原文" })).toHaveValue("hello"));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "译文" })).toHaveValue("你好"));
+    expect(getClipboardText).toHaveBeenCalledOnce();
+    expect(translateText).toHaveBeenCalledOnce();
+  });
+
+  it("reads new clipboard text each time the window regains focus", async () => {
+    await desktopBridge.saveConfig({
+      ...DEFAULT_CONFIG,
+      autoTranslate: false,
+      clipboardWatch: true,
+      tencent: { ...DEFAULT_CONFIG.tencent, secretKey: "sk-test" },
+    });
+    const getClipboardText = vi.spyOn(desktopBridge, "getClipboardText")
+      .mockResolvedValueOnce("hello")
+      .mockResolvedValueOnce("simple translate");
+
+    render(App);
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "译文" })).toHaveValue("你好"));
+
+    window.dispatchEvent(new FocusEvent("focus"));
+
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "原文" })).toHaveValue("simple translate"));
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "译文" })).toHaveValue("简单翻译"));
+    expect(getClipboardText).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not read while disabled and reads immediately when enabled", async () => {
+    await desktopBridge.saveConfig({
+      ...DEFAULT_CONFIG,
+      autoTranslate: false,
+      tencent: { ...DEFAULT_CONFIG.tencent, secretKey: "sk-test" },
+    });
+    const getClipboardText = vi.spyOn(desktopBridge, "getClipboardText").mockResolvedValue("hello");
+    render(App);
+
+    await screen.findByRole("button", { name: "打开时读取剪贴板" });
+    window.dispatchEvent(new FocusEvent("focus"));
+    await Promise.resolve();
+    expect(getClipboardText).not.toHaveBeenCalled();
+
+    await fireEvent.click(screen.getByRole("button", { name: "打开时读取剪贴板" }));
+
+    await waitFor(() => expect(getClipboardText).toHaveBeenCalledOnce());
+    expect(screen.getByRole("textbox", { name: "原文" })).toHaveValue("hello");
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "译文" })).toHaveValue("你好"));
+  });
+
+  it("stops reading after the clipboard option is disabled", async () => {
+    await desktopBridge.saveConfig({
+      ...DEFAULT_CONFIG,
+      autoTranslate: false,
+      clipboardWatch: true,
+      tencent: { ...DEFAULT_CONFIG.tencent, secretKey: "sk-test" },
+    });
+    const getClipboardText = vi.spyOn(desktopBridge, "getClipboardText").mockResolvedValue("hello");
+    render(App);
+
+    const clipboardButton = await screen.findByRole("button", { name: "打开时读取剪贴板" });
+    await waitFor(() => expect(getClipboardText).toHaveBeenCalledOnce());
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "译文" })).toHaveValue("你好"));
+    await fireEvent.click(clipboardButton);
+    expect(clipboardButton).toHaveAttribute("aria-pressed", "false");
+
+    window.dispatchEvent(new FocusEvent("focus"));
+    await Promise.resolve();
+
+    expect(getClipboardText).toHaveBeenCalledOnce();
+  });
+
   it("switches to Baidu as the third engine", async () => {
     const saveConfig = vi.spyOn(desktopBridge, "saveConfig");
     render(App);

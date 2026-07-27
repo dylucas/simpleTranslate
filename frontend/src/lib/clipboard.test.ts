@@ -1,76 +1,110 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createClipboardWatcher } from "./clipboard";
+import { createClipboardReader } from "./clipboard";
 
 afterEach(() => vi.useRealTimers());
 
-describe("clipboard watcher", () => {
-  it("uses the current clipboard as a baseline and emits later changes", async () => {
+describe("clipboard reader", () => {
+  it("reads once without starting background polling", async () => {
     vi.useFakeTimers();
+    const getText = vi.fn().mockResolvedValue("current text");
     const onText = vi.fn();
-    const getText = vi.fn()
-      .mockResolvedValueOnce("existing")
-      .mockResolvedValueOnce("new text");
-    const watcher = createClipboardWatcher({ getText, onText, intervalMs: 100 });
+    const reader = createClipboardReader({ getText, onText });
 
-    watcher.start();
-    await Promise.resolve();
-    await vi.advanceTimersByTimeAsync(100);
+    await reader.read();
+    await vi.advanceTimersByTimeAsync(10_000);
 
+    expect(getText).toHaveBeenCalledOnce();
     expect(onText).toHaveBeenCalledOnce();
-    expect(onText).toHaveBeenCalledWith("new text");
-    watcher.stop();
+    expect(onText).toHaveBeenCalledWith("current text");
   });
 
-  it("ignores a clipboard read that finishes after the watcher is stopped", async () => {
-    vi.useFakeTimers();
-    let finishPoll: ((text: string) => void) | undefined;
-    const getText = vi.fn()
-      .mockResolvedValueOnce("existing")
-      .mockImplementationOnce(() => new Promise<string>((resolve) => { finishPoll = resolve; }));
+  it("coalesces concurrent reads", async () => {
+    let finishRead: ((text: string) => void) | undefined;
+    const getText = vi.fn(() => new Promise<string>((resolve) => { finishRead = resolve; }));
     const onText = vi.fn();
-    const watcher = createClipboardWatcher({ getText, onText, intervalMs: 100 });
+    const reader = createClipboardReader({ getText, onText });
 
-    watcher.start();
-    await Promise.resolve();
-    await vi.advanceTimersByTimeAsync(100);
-    expect(getText).toHaveBeenCalledTimes(2);
+    const first = reader.read();
+    const second = reader.read();
+    expect(getText).toHaveBeenCalledOnce();
+    expect(second).toBe(first);
 
-    watcher.stop();
-    finishPoll?.("late text");
-    await Promise.resolve();
+    finishRead?.("new text");
+    await first;
+    expect(onText).toHaveBeenCalledWith("new text");
+  });
+
+  it("ignores a clipboard read that finishes after cancellation", async () => {
+    let finishRead: ((text: string) => void) | undefined;
+    const getText = vi.fn(() => new Promise<string>((resolve) => { finishRead = resolve; }));
+    const onText = vi.fn();
+    const reader = createClipboardReader({ getText, onText });
+
+    const pending = reader.read();
+    reader.cancel();
+    finishRead?.("late text");
+    await pending;
 
     expect(onText).not.toHaveBeenCalled();
   });
 
   it("does not let an in-flight read overwrite an explicit baseline", async () => {
-    vi.useFakeTimers();
-    let finishPoll: ((text: string) => void) | undefined;
-    const getText = vi.fn()
-      .mockResolvedValueOnce("existing")
-      .mockImplementationOnce(() => new Promise<string>((resolve) => { finishPoll = resolve; }));
+    let finishRead: ((text: string) => void) | undefined;
+    const getText = vi.fn(() => new Promise<string>((resolve) => { finishRead = resolve; }));
     const onText = vi.fn();
-    const watcher = createClipboardWatcher({ getText, onText, intervalMs: 100 });
+    const reader = createClipboardReader({ getText, onText });
 
-    watcher.start();
-    await Promise.resolve();
-    await vi.advanceTimersByTimeAsync(100);
-    watcher.setBaseline("copied by app");
-    finishPoll?.("existing");
-    await Promise.resolve();
+    const pending = reader.read();
+    reader.setBaseline("copied by app");
+    finishRead?.("older clipboard text");
+    await pending;
 
     expect(onText).not.toHaveBeenCalled();
-    watcher.stop();
   });
 
-  it("rejects clipboard text above the UTF-8 byte limit", async () => {
-	vi.useFakeTimers();
-	const onText = vi.fn();
-	const getText = vi.fn().mockResolvedValueOnce("").mockResolvedValueOnce("中".repeat(2001));
-	const watcher = createClipboardWatcher({ getText, onText, intervalMs: 100, maxTextLength: 6000 });
-	watcher.start();
-	await Promise.resolve();
-	await vi.advanceTimersByTimeAsync(100);
-	expect(onText).not.toHaveBeenCalled();
-	watcher.stop();
+  it("uses the baseline and last handled text to prevent feedback and duplicates", async () => {
+    const getText = vi.fn()
+      .mockResolvedValueOnce("copied by app")
+      .mockResolvedValueOnce("new text")
+      .mockResolvedValueOnce("new text");
+    const onText = vi.fn();
+    const reader = createClipboardReader({ getText, onText });
+    reader.setBaseline("copied by app");
+
+    await reader.read();
+    await reader.read();
+    await reader.read();
+
+    expect(getText).toHaveBeenCalledTimes(3);
+    expect(onText).toHaveBeenCalledOnce();
+    expect(onText).toHaveBeenCalledWith("new text");
+  });
+
+  it("rejects blank and oversized clipboard text", async () => {
+    const getText = vi.fn()
+      .mockResolvedValueOnce("   ")
+      .mockResolvedValueOnce("中".repeat(2001));
+    const onText = vi.fn();
+    const reader = createClipboardReader({ getText, onText, maxTextLength: 6000 });
+
+    await reader.read();
+    await reader.read();
+
+    expect(onText).not.toHaveBeenCalled();
+  });
+
+  it("retries text skipped while translation is busy", async () => {
+    let busy = true;
+    const getText = vi.fn().mockResolvedValue("new text");
+    const onText = vi.fn();
+    const reader = createClipboardReader({ getText, onText, isBusy: () => busy });
+
+    await reader.read();
+    busy = false;
+    await reader.read();
+
+    expect(getText).toHaveBeenCalledTimes(2);
+    expect(onText).toHaveBeenCalledOnce();
+    expect(onText).toHaveBeenCalledWith("new text");
   });
 });

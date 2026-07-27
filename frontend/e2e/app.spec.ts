@@ -110,7 +110,7 @@ test("translation modes remain independent controls", async ({ page }) => {
   await page.goto("/");
 
   const auto = page.getByRole("button", { name: "自动翻译" });
-  const clipboard = page.getByRole("button", { name: "剪贴板监听" });
+  const clipboard = page.getByRole("button", { name: "打开时读取剪贴板" });
   const compare = page.getByRole("button", { name: "多引擎对照" });
 
   await expect(auto).toHaveAttribute("aria-pressed", "true");
