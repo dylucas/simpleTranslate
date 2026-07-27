@@ -49,7 +49,14 @@ const CurrentVersion = 3
 
 const BaiduGeneralDomain = "general"
 
-const maxConfigFileBytes = 1 << 20
+const (
+	maxConfigFileBytes    = 1 << 20
+	maxCredentialBytes    = 4096
+	maxRegionBytes        = 256
+	maxEngineIDBytes      = 32
+	maxLanguageCodeBytes  = 16
+	maxCompareEngineCount = 16
+)
 
 var validBaiduDomains = map[string]struct{}{
 	BaiduGeneralDomain: {},
@@ -73,6 +80,59 @@ func NormalizeBaiduDomain(value string) string {
 		return value
 	}
 	return BaiduGeneralDomain
+}
+
+// ValidateServiceConfig bounds draft credentials before normalization, SDK
+// construction, or serialization. Empty credentials remain valid so users can
+// save partially configured services.
+func ValidateServiceConfig(service ServiceConfig) error {
+	if len(service.SecretId) > maxCredentialBytes || len(service.SecretKey) > maxCredentialBytes {
+		return fmt.Errorf("凭据字段不能超过 %d 个 UTF-8 字节", maxCredentialBytes)
+	}
+	if len(service.Region) > maxRegionBytes {
+		return fmt.Errorf("区域或端点不能超过 %d 个 UTF-8 字节", maxRegionBytes)
+	}
+	return nil
+}
+
+// ValidateBaiduConfig applies the same pre-processing bounds to Baidu drafts.
+func ValidateBaiduConfig(service BaiduConfig) error {
+	if len(service.AppID) > maxCredentialBytes || len(service.SecretKey) > maxCredentialBytes {
+		return fmt.Errorf("凭据字段不能超过 %d 个 UTF-8 字节", maxCredentialBytes)
+	}
+	if len(service.Domain) > maxEngineIDBytes {
+		return fmt.Errorf("翻译领域不能超过 %d 个 UTF-8 字节", maxEngineIDBytes)
+	}
+	return nil
+}
+
+// ValidateCloudConfig rejects structurally oversized in-memory configuration
+// before normalization can scan or copy attacker-controlled fields.
+func ValidateCloudConfig(cfg CloudConfig) error {
+	if err := ValidateServiceConfig(cfg.Tencent); err != nil {
+		return fmt.Errorf("腾讯云配置无效: %w", err)
+	}
+	if err := ValidateServiceConfig(cfg.Aliyun); err != nil {
+		return fmt.Errorf("阿里云配置无效: %w", err)
+	}
+	if err := ValidateBaiduConfig(cfg.Baidu); err != nil {
+		return fmt.Errorf("百度配置无效: %w", err)
+	}
+	if len(cfg.DefaultEngine) > maxEngineIDBytes {
+		return fmt.Errorf("默认引擎名称不能超过 %d 个 UTF-8 字节", maxEngineIDBytes)
+	}
+	if len(cfg.SourceLanguage) > maxLanguageCodeBytes || len(cfg.TargetLanguage) > maxLanguageCodeBytes {
+		return fmt.Errorf("语言代码不能超过 %d 个 UTF-8 字节", maxLanguageCodeBytes)
+	}
+	if len(cfg.CompareEngines) > maxCompareEngineCount {
+		return fmt.Errorf("对照引擎不能超过 %d 个", maxCompareEngineCount)
+	}
+	for _, engine := range cfg.CompareEngines {
+		if len(engine) > maxEngineIDBytes {
+			return fmt.Errorf("对照引擎名称不能超过 %d 个 UTF-8 字节", maxEngineIDBytes)
+		}
+	}
+	return nil
 }
 
 // DefaultCloudConfig is also used as the migration base for older files.
@@ -227,6 +287,9 @@ func GetConfig(path string) (CloudConfig, error) {
 	if err := json.Unmarshal(data, &cfg); err != nil {
 		return cfg, fmt.Errorf("解析配置文件失败: %w", err)
 	}
+	if err := ValidateCloudConfig(cfg); err != nil {
+		return DefaultCloudConfig(), fmt.Errorf("配置字段校验失败: %w", err)
+	}
 
 	cfg = normalizeConfig(cfg)
 	updateCacheLocked(path, cfg)
@@ -235,6 +298,9 @@ func GetConfig(path string) (CloudConfig, error) {
 
 // SaveConfig 将配置序列化为带缩进的 JSON 写入磁盘（0600 权限），并刷新内存缓存。
 func SaveConfig(path string, cfg CloudConfig) error {
+	if err := ValidateCloudConfig(cfg); err != nil {
+		return fmt.Errorf("配置字段校验失败: %w", err)
+	}
 	cfg = normalizeConfig(cfg)
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {

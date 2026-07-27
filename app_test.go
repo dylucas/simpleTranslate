@@ -42,6 +42,13 @@ func TestCancelTranslationCancelsRegisteredRequest(t *testing.T) {
 	}
 }
 
+func TestCancelTranslationRejectsOversizedRequestID(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	if app.CancelTranslation(strings.Repeat("x", maxRequestIDBytes+1)) {
+		t.Fatal("oversized request ID should not be cancellable")
+	}
+}
+
 func TestTranslateTextCancellationSkipsCache(t *testing.T) {
 	app := NewAppWithDataDir(t.TempDir())
 	started := make(chan struct{})
@@ -217,6 +224,41 @@ func TestTranslateTextRejectsInvalidInput(t *testing.T) {
 	}
 }
 
+func TestTranslateTextRejectsOversizedMetadataBeforeTranslation(t *testing.T) {
+	oversizedRequestID := strings.Repeat("r", maxRequestIDBytes+1)
+	for _, tt := range []struct {
+		name   string
+		mutate func(*TranslateRequest)
+	}{
+		{name: "request ID", mutate: func(req *TranslateRequest) { req.RequestID = oversizedRequestID }},
+		{name: "engine", mutate: func(req *TranslateRequest) { req.Engine = strings.Repeat("e", maxEngineIDBytes+1) }},
+		{name: "source", mutate: func(req *TranslateRequest) { req.Source = strings.Repeat("s", maxLanguageCodeBytes+1) }},
+		{name: "target", mutate: func(req *TranslateRequest) { req.Target = strings.Repeat("t", maxLanguageCodeBytes+1) }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			app := NewAppWithDataDir(t.TempDir())
+			calls := 0
+			app.translateInvoke = func(context.Context, string, string, string, string) (string, error) {
+				calls++
+				return "unexpected", nil
+			}
+			req := TranslateRequest{RequestID: "bounded", Text: "hello", Source: "en", Target: "zh", Engine: "tencent"}
+			tt.mutate(&req)
+
+			result := app.TranslateText(req)
+			if result.ErrorCode != ErrCodeInvalidInput {
+				t.Fatalf("ErrorCode = %q, want %q", result.ErrorCode, ErrCodeInvalidInput)
+			}
+			if calls != 0 {
+				t.Fatalf("translation calls = %d, want 0", calls)
+			}
+			if req.RequestID == oversizedRequestID && result.RequestID != "" {
+				t.Fatalf("oversized request ID was reflected: length %d", len(result.RequestID))
+			}
+		})
+	}
+}
+
 func TestTranslateTextValidatesAndNormalizesLanguages(t *testing.T) {
 	app := NewAppWithDataDir(t.TempDir())
 	for _, tt := range []struct {
@@ -276,6 +318,50 @@ func TestTranslateMultiRejectsInvalidLanguageRoute(t *testing.T) {
 	result := res.Results["tencent"]
 	if result.ErrorCode != ErrCodeInvalidInput {
 		t.Fatalf("ErrorCode = %q, want %q", result.ErrorCode, ErrCodeInvalidInput)
+	}
+}
+
+func TestTranslateMultiRejectsOversizedMetadataBeforeTranslation(t *testing.T) {
+	oversizedRequestID := strings.Repeat("r", maxRequestIDBytes+1)
+	for _, tt := range []struct {
+		name   string
+		mutate func(*MultiTranslateRequest)
+	}{
+		{name: "request ID", mutate: func(req *MultiTranslateRequest) { req.RequestID = oversizedRequestID }},
+		{name: "source", mutate: func(req *MultiTranslateRequest) { req.Source = strings.Repeat("s", maxLanguageCodeBytes+1) }},
+		{name: "target", mutate: func(req *MultiTranslateRequest) { req.Target = strings.Repeat("t", maxLanguageCodeBytes+1) }},
+		{name: "engine count", mutate: func(req *MultiTranslateRequest) { req.Engines = make([]string, maxRequestedEngines+1) }},
+		{name: "engine name", mutate: func(req *MultiTranslateRequest) { req.Engines = []string{strings.Repeat("e", maxEngineIDBytes+1)} }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			app := NewAppWithDataDir(t.TempDir())
+			calls := 0
+			app.translateInvoke = func(context.Context, string, string, string, string) (string, error) {
+				calls++
+				return "unexpected", nil
+			}
+			req := MultiTranslateRequest{RequestID: "bounded", Text: "hello", Source: "en", Target: "zh", Engines: []string{"tencent"}}
+			tt.mutate(&req)
+
+			result := app.TranslateMulti(req)
+			if len(result.Results) == 0 {
+				t.Fatal("oversized metadata should return structured engine errors")
+			}
+			for engine, engineResult := range result.Results {
+				if engineResult.ErrorCode != ErrCodeInvalidInput {
+					t.Fatalf("%s ErrorCode = %q, want %q", engine, engineResult.ErrorCode, ErrCodeInvalidInput)
+				}
+				if len(engineResult.RequestID) > maxRequestIDBytes {
+					t.Fatalf("%s reflected oversized request ID: length %d", engine, len(engineResult.RequestID))
+				}
+			}
+			if calls != 0 {
+				t.Fatalf("translation calls = %d, want 0", calls)
+			}
+			if req.RequestID == oversizedRequestID && result.RequestID != "" {
+				t.Fatalf("oversized request ID was reflected: length %d", len(result.RequestID))
+			}
+		})
 	}
 }
 
@@ -841,6 +927,106 @@ func TestConnectionUsesBoundedContext(t *testing.T) {
 	err := app.TestConnection(" Aliyun ", ServiceConfig{})
 	if !errors.Is(err, probeErr) {
 		t.Fatalf("TestConnection error = %v, want wrapped probe error", err)
+	}
+}
+
+func TestConnectionRejectsOversizedEngineBeforeProbe(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	calls := 0
+	app.connectionTestInvoke = func(context.Context, string, ServiceConfig) error {
+		calls++
+		return nil
+	}
+	engine := strings.Repeat("e", maxEngineIDBytes+1)
+	err := app.TestConnection(engine, ServiceConfig{})
+	if err == nil {
+		t.Fatal("oversized engine should be rejected")
+	}
+	if strings.Contains(err.Error(), engine) {
+		t.Fatal("oversized engine was reflected in the error")
+	}
+	if calls != 0 {
+		t.Fatalf("connection probe calls = %d, want 0", calls)
+	}
+}
+
+func TestConnectionRejectsOversizedServiceBeforeProbe(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(*ServiceConfig)
+	}{
+		{name: "secret ID", mutate: func(service *ServiceConfig) { service.SecretId = strings.Repeat("x", 4097) }},
+		{name: "secret key", mutate: func(service *ServiceConfig) { service.SecretKey = strings.Repeat("x", 4097) }},
+		{name: "region", mutate: func(service *ServiceConfig) { service.Region = strings.Repeat("x", 257) }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			app := NewAppWithDataDir(t.TempDir())
+			calls := 0
+			app.connectionTestInvoke = func(context.Context, string, ServiceConfig) error {
+				calls++
+				return nil
+			}
+			service := ServiceConfig{}
+			tt.mutate(&service)
+			if err := app.TestConnection("tencent", service); err == nil {
+				t.Fatal("oversized service should be rejected")
+			}
+			if calls != 0 {
+				t.Fatalf("connection probe calls = %d, want 0", calls)
+			}
+		})
+	}
+}
+
+func TestBaiduConnectionRejectsOversizedServiceBeforeProbe(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(*BaiduConfig)
+	}{
+		{name: "app ID", mutate: func(service *BaiduConfig) { service.AppID = strings.Repeat("x", 4097) }},
+		{name: "secret key", mutate: func(service *BaiduConfig) { service.SecretKey = strings.Repeat("x", 4097) }},
+		{name: "domain", mutate: func(service *BaiduConfig) { service.Domain = strings.Repeat("x", 33) }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			app := NewAppWithDataDir(t.TempDir())
+			calls := 0
+			app.baiduConnectionTestInvoke = func(context.Context, BaiduConfig) error {
+				calls++
+				return nil
+			}
+			service := BaiduConfig{AppID: "app", SecretKey: "secret", Domain: "general"}
+			tt.mutate(&service)
+			if err := app.TestBaiduConnection(service); err == nil {
+				t.Fatal("oversized Baidu service should be rejected")
+			}
+			if calls != 0 {
+				t.Fatalf("Baidu connection probe calls = %d, want 0", calls)
+			}
+		})
+	}
+}
+
+func TestBaiduConnectionUsesBoundedContextAndNormalizesDomain(t *testing.T) {
+	app := NewAppWithDataDir(t.TempDir())
+	probeErr := errors.New("probe failed")
+	app.baiduConnectionTestInvoke = func(ctx context.Context, service BaiduConfig) error {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			t.Fatal("Baidu connection test context has no deadline")
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 || remaining > engineTimeout {
+			t.Fatalf("Baidu connection test deadline remaining = %v, want (0, %v]", remaining, engineTimeout)
+		}
+		if service.Domain != "wiki" {
+			t.Fatalf("Baidu domain = %q, want wiki", service.Domain)
+		}
+		return probeErr
+	}
+
+	err := app.TestBaiduConnection(BaiduConfig{AppID: "app", SecretKey: "secret", Domain: " WIKI "})
+	if !errors.Is(err, probeErr) {
+		t.Fatalf("TestBaiduConnection error = %v, want wrapped probe error", err)
 	}
 }
 

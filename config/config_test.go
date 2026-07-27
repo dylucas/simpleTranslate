@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -109,6 +110,39 @@ func TestGetConfigRejectsOversizedFile(t *testing.T) {
 
 	if _, err := GetConfig(path); err == nil || !strings.Contains(err.Error(), "超过") {
 		t.Fatalf("oversized config error = %v", err)
+	}
+}
+
+func TestGetConfigRejectsOversizedFieldBeforeCaching(t *testing.T) {
+	InvalidateCache()
+	path := filepath.Join(t.TempDir(), "config.json")
+	cfg := DefaultCloudConfig()
+	cfg.Tencent.SecretKey = strings.Repeat("x", maxCredentialBytes+1)
+	data, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := GetConfig(path)
+	if err == nil || !strings.Contains(err.Error(), "配置字段校验失败") {
+		t.Fatalf("GetConfig error = %v, want field validation error", err)
+	}
+	if !reflect.DeepEqual(got, DefaultCloudConfig()) {
+		t.Fatalf("invalid config returned untrusted fields: %+v", got)
+	}
+
+	if err := os.WriteFile(path, []byte(`{"defaultEngine":"aliyun"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	got, err = GetConfig(path)
+	if err != nil {
+		t.Fatalf("valid replacement config remained poisoned in cache: %v", err)
+	}
+	if got.DefaultEngine != "aliyun" {
+		t.Fatalf("default engine = %q, want aliyun", got.DefaultEngine)
 	}
 }
 
@@ -285,6 +319,32 @@ func TestNormalizeConfigLanguages(t *testing.T) {
 	cfg = normalizeConfig(CloudConfig{SourceLanguage: "invalid", TargetLanguage: ""})
 	if cfg.SourceLanguage != "auto" || cfg.TargetLanguage != "zh" {
 		t.Fatalf("invalid languages did not fall back: source=%q target=%q", cfg.SourceLanguage, cfg.TargetLanguage)
+	}
+}
+
+func TestValidateCloudConfigRejectsOversizedFields(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		mutate func(*CloudConfig)
+	}{
+		{name: "tencent credential", mutate: func(cfg *CloudConfig) { cfg.Tencent.SecretKey = strings.Repeat("x", maxCredentialBytes+1) }},
+		{name: "aliyun credential", mutate: func(cfg *CloudConfig) { cfg.Aliyun.SecretId = strings.Repeat("x", maxCredentialBytes+1) }},
+		{name: "aliyun region", mutate: func(cfg *CloudConfig) { cfg.Aliyun.Region = strings.Repeat("x", maxRegionBytes+1) }},
+		{name: "baidu credential", mutate: func(cfg *CloudConfig) { cfg.Baidu.AppID = strings.Repeat("x", maxCredentialBytes+1) }},
+		{name: "baidu domain", mutate: func(cfg *CloudConfig) { cfg.Baidu.Domain = strings.Repeat("x", maxEngineIDBytes+1) }},
+		{name: "default engine", mutate: func(cfg *CloudConfig) { cfg.DefaultEngine = strings.Repeat("x", maxEngineIDBytes+1) }},
+		{name: "source language", mutate: func(cfg *CloudConfig) { cfg.SourceLanguage = strings.Repeat("x", maxLanguageCodeBytes+1) }},
+		{name: "target language", mutate: func(cfg *CloudConfig) { cfg.TargetLanguage = strings.Repeat("x", maxLanguageCodeBytes+1) }},
+		{name: "compare engine count", mutate: func(cfg *CloudConfig) { cfg.CompareEngines = make([]string, maxCompareEngineCount+1) }},
+		{name: "compare engine name", mutate: func(cfg *CloudConfig) { cfg.CompareEngines = []string{strings.Repeat("x", maxEngineIDBytes+1)} }},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := DefaultCloudConfig()
+			tt.mutate(&cfg)
+			if err := ValidateCloudConfig(cfg); err == nil || !strings.Contains(err.Error(), "超过") {
+				t.Fatalf("ValidateCloudConfig error = %v, want bounded-field error", err)
+			}
+		})
 	}
 }
 

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	goruntime "runtime"
+	"simpleTranslate/config"
 	"simpleTranslate/internal/storage"
 	"simpleTranslate/translate"
 	"strconv"
@@ -45,6 +46,8 @@ type App struct {
 	// connectionTestInvoke allows tests to inspect the bounded connection-test
 	// context without making a real cloud request.
 	connectionTestInvoke func(context.Context, string, ServiceConfig) error
+	// baiduConnectionTestInvoke provides the equivalent seam for Baidu drafts.
+	baiduConnectionTestInvoke func(context.Context, BaiduConfig) error
 }
 
 type activeTranslation struct {
@@ -116,6 +119,9 @@ func (a *App) beginTranslation(requestID string) (context.Context, func()) {
 // CancelTranslation stops an active translation identified by requestID.
 // Empty or unknown IDs are intentionally treated as non-cancellable.
 func (a *App) CancelTranslation(requestID string) bool {
+	if len(requestID) > maxRequestIDBytes {
+		return false
+	}
 	requestID = strings.TrimSpace(requestID)
 	if requestID == "" {
 		return false
@@ -219,7 +225,7 @@ const (
 	defaultHistoryPageLimit = 10
 	maxHistoryPageLimit     = 50
 	maxHistoryOutputBytes   = 256 << 10
-	maxHistoryLanguageBytes = 16
+	maxHistoryLanguageBytes = maxLanguageCodeBytes
 	maxHistoryTimeBytes     = 128
 	maxHistoryQueryBytes    = maxInputBytes
 	maxHistoryFileBytes     = 64 << 20
@@ -229,16 +235,32 @@ const (
 // 不再返回 Go error：所有错误通过 TranslateResult.Error/ErrorCode 字段返回，
 // 前端总能拿到结构化错误用于差异化提示与重试策略。
 func (a *App) TranslateText(req TranslateRequest) TranslateResult {
+	requestID := req.RequestID
+	if len(requestID) > maxRequestIDBytes {
+		requestID = ""
+	}
+	empty := TranslateResult{RequestID: requestID}
+	if len(req.RequestID) > maxRequestIDBytes {
+		return translateResultError(empty, newTranslateError(ErrCodeInvalidInput, "", fmt.Sprintf("请求 ID 不能超过 %d 个 UTF-8 字节", maxRequestIDBytes), nil))
+	}
+	if len(req.Engine) > maxEngineIDBytes {
+		return translateResultError(empty, newTranslateError(ErrCodeInvalidInput, "", fmt.Sprintf("翻译引擎名称不能超过 %d 个 UTF-8 字节", maxEngineIDBytes), nil))
+	}
+	if len(req.Source) > maxLanguageCodeBytes || len(req.Target) > maxLanguageCodeBytes {
+		return translateResultError(empty, newTranslateError(ErrCodeInvalidInput, "", fmt.Sprintf("语言代码不能超过 %d 个 UTF-8 字节", maxLanguageCodeBytes), nil))
+	}
+	if len(req.Text) > maxInputBytes {
+		return translateResultError(empty, newTranslateError(ErrCodeInvalidInput, "", fmt.Sprintf("原文不能超过 %d 个 UTF-8 字节", maxInputBytes), nil))
+	}
+
 	text, source, target, engine := req.Text, req.Source, req.Target, req.Engine
 	engine = strings.ToLower(strings.TrimSpace(engine))
 	source = normalizeLanguageCode(source)
 	target = normalizeLanguageCode(target)
-	empty := TranslateResult{RequestID: req.RequestID, Source: source, Target: target}
+	empty.Source = source
+	empty.Target = target
 	if strings.TrimSpace(text) == "" {
 		return translateResultError(empty, newTranslateError(ErrCodeInvalidInput, engine, "输入文本为空", nil))
-	}
-	if len(text) > maxInputBytes {
-		return translateResultError(empty, newTranslateError(ErrCodeInvalidInput, engine, fmt.Sprintf("原文不能超过 %d 个 UTF-8 字节", maxInputBytes), nil))
 	}
 	if !isSupportedEngine(engine) {
 		return translateResultError(empty, newTranslateError(ErrCodeInvalidInput, engine, "不支持的翻译引擎", nil))
@@ -489,9 +511,13 @@ func normalizeEngines(engines []string) []string {
 		out = append(out, e)
 	}
 	if len(out) == 0 {
-		out = []string{"tencent", "aliyun", "baidu"}
+		out = defaultEngines()
 	}
 	return out
+}
+
+func defaultEngines() []string {
+	return []string{"tencent", "aliyun", "baidu"}
 }
 
 const maxPooledCacheKeyBufferBytes = 16 << 10
@@ -619,14 +645,49 @@ func (a *App) detectLanguageBestEffort(ctx context.Context, text, target string,
 // engineTimeout 单引擎翻译最大等待时间。
 // 与 translate 包的 HTTP/SDK 超时保持一致，确保超时后底层调用也会自然退出，
 // 不会因外层 select 提前返回而遗留 goroutine。
-const engineTimeout = 30 * time.Second
-const maxInputBytes = 6000
+const (
+	engineTimeout        = 30 * time.Second
+	maxInputBytes        = 6000
+	maxRequestIDBytes    = 128
+	maxEngineIDBytes     = 32
+	maxLanguageCodeBytes = 16
+	maxRequestedEngines  = 16
+)
 
 // TranslateMulti 多引擎并发翻译：同一句话同时走多个引擎，返回并排结果。
 // 单引擎超时 engineTimeout，超时的引擎返回 "翻译超时" 错误而非阻塞整体。
 // 不再返回 Go error：识别失败时为每个引擎填充结构化错误，确保前端总能拿到 errorCode。
 
 func (a *App) TranslateMulti(req MultiTranslateRequest) MultiTranslateResult {
+	requestID := req.RequestID
+	if len(requestID) > maxRequestIDBytes {
+		requestID = ""
+	}
+	invalidRequest := func(message string) MultiTranslateResult {
+		err := newTranslateError(ErrCodeInvalidInput, "", message, nil)
+		return MultiTranslateResult{
+			RequestID: requestID,
+			Results:   engineErrorResults(requestID, defaultEngines(), err),
+		}
+	}
+	if len(req.RequestID) > maxRequestIDBytes {
+		return invalidRequest(fmt.Sprintf("请求 ID 不能超过 %d 个 UTF-8 字节", maxRequestIDBytes))
+	}
+	if len(req.Source) > maxLanguageCodeBytes || len(req.Target) > maxLanguageCodeBytes {
+		return invalidRequest(fmt.Sprintf("语言代码不能超过 %d 个 UTF-8 字节", maxLanguageCodeBytes))
+	}
+	if len(req.Engines) > maxRequestedEngines {
+		return invalidRequest(fmt.Sprintf("翻译引擎不能超过 %d 个", maxRequestedEngines))
+	}
+	for _, engine := range req.Engines {
+		if len(engine) > maxEngineIDBytes {
+			return invalidRequest(fmt.Sprintf("翻译引擎名称不能超过 %d 个 UTF-8 字节", maxEngineIDBytes))
+		}
+	}
+	if len(req.Text) > maxInputBytes {
+		return invalidRequest(fmt.Sprintf("原文不能超过 %d 个 UTF-8 字节", maxInputBytes))
+	}
+
 	text, source, target, engines := req.Text, req.Source, req.Target, req.Engines
 	source = normalizeLanguageCode(source)
 	target = normalizeLanguageCode(target)
@@ -636,11 +697,6 @@ func (a *App) TranslateMulti(req MultiTranslateRequest) MultiTranslateResult {
 	emptyRes := MultiTranslateResult{RequestID: req.RequestID, Source: source, Target: target, Results: map[string]EngineTranslateResult{}}
 	if strings.TrimSpace(text) == "" {
 		err := newTranslateError(ErrCodeInvalidInput, "", "输入文本为空", nil)
-		emptyRes.Results = engineErrorResults(req.RequestID, engines, err)
-		return emptyRes
-	}
-	if len(text) > maxInputBytes {
-		err := newTranslateError(ErrCodeInvalidInput, "", fmt.Sprintf("原文不能超过 %d 个 UTF-8 字节", maxInputBytes), nil)
 		emptyRes.Results = engineErrorResults(req.RequestID, engines, err)
 		return emptyRes
 	}
@@ -724,6 +780,12 @@ func engineErrorResults(requestID string, engines []string, err *TranslateError)
 
 // TestConnection 用一次最小请求验证指定引擎的凭据是否可用
 func (a *App) TestConnection(engine string, service ServiceConfig) error {
+	if len(engine) > maxEngineIDBytes {
+		return fmt.Errorf("翻译引擎名称不能超过 %d 个 UTF-8 字节", maxEngineIDBytes)
+	}
+	if err := config.ValidateServiceConfig(service); err != nil {
+		return fmt.Errorf("连接配置无效: %w", err)
+	}
 	engine = strings.ToLower(strings.TrimSpace(engine))
 	if engine == "" {
 		engine = "tencent"
@@ -761,6 +823,9 @@ func (a *App) probeConnection(ctx context.Context, engine string, service Servic
 // TestBaiduConnection validates draft Baidu credentials without persisting
 // them. The selected translation endpoint is exercised with a supported route.
 func (a *App) TestBaiduConnection(service BaiduConfig) error {
+	if err := config.ValidateBaiduConfig(service); err != nil {
+		return fmt.Errorf("连接配置无效: %w", err)
+	}
 	ctx, cancel := a.newEngineContext()
 	defer cancel()
 	service.Domain = strings.ToLower(strings.TrimSpace(service.Domain))
@@ -768,7 +833,13 @@ func (a *App) TestBaiduConnection(service BaiduConfig) error {
 	if service.Domain == "novel" || service.Domain == "wiki" {
 		probe, source, target = "你好", "zh", "en"
 	}
-	if _, err := translate.TranslateBaiduWithContext(ctx, probe, source, target, service); err != nil {
+	var err error
+	if a.baiduConnectionTestInvoke != nil {
+		err = a.baiduConnectionTestInvoke(ctx, service)
+	} else {
+		_, err = translate.TranslateBaiduWithContext(ctx, probe, source, target, service)
+	}
+	if err != nil {
 		return fmt.Errorf("百度翻译连接测试失败: %w", err)
 	}
 	return nil
